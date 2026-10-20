@@ -1,0 +1,53 @@
+# Paths are relative to the project root.
+papers_dir: ./papers          # put your PDFs here (subfolders are scanned too)
+data_dir: ./data              # text cache, vector index, annotations (JSON)
+
+# Which models to use: a name from the lists below.
+chat_model: gemini-flash-lite # default for chat and "Fill with AI" (switchable in the app sidebar)
+embedding_model: gemini       # for similar-paper search. Changing it needs a re-index (each has its own index)
+
+# Available models. provider = a LangChain provider name:
+#   google_genai (Gemini, key: GOOGLE_API_KEY or GEMINI_API_KEY)
+#   openai       (key: OPENAI_API_KEY; also any OpenAI-compatible server via params.base_url)
+#   anthropic    (key: ANTHROPIC_API_KEY;  needs: uv add langchain-anthropic)
+#   ollama       (local, no key;           needs: uv add langchain-ollama)
+#   mistralai, groq, ... see https://docs.langchain.com/oss/python/langchain/models
+# params: optional extra settings passed to the model, e.g. {temperature: 0}
+chat_models:
+  gemini-flash-lite:          # cheapest ($0.10 / $0.40 per 1M tokens, Oct 2026)
+    provider: google_genai
+    model: gemini-2.5-flash-lite
+  gemini-flash:
+    provider: google_genai
+    model: gemini-2.5-flash
+  gemini-pro:
+    provider: google_genai
+    model: gemini-2.5-pro
+  gpt-5-mini:
+    provider: openai
+    model: gpt-5-mini
+  gpt-5:
+    provider: openai
+    model: gpt-5
+  # claude-sonnet:
+  #   provider: anthropic
+  #   model: claude-sonnet-5-5
+  # llama-local:
+  #   provider: ollama
+  #   model: llama3.1
+
+embedding_models:
+  gemini:                     # $0.20 per 1M tokens, Oct 2026
+    provider: google_genai
+    model: gemini-embedding-2
+  openai-small:
+    provider: openai
+    model: text-embedding-3-small
+
+# Similar-paper search (RAG)
+chunk_size: 1500
+chunk_overlap: 200
+similar_top_k: 10
+
+# Very long papers are cut to this many characters before being sent to the chat model
+max_context_chars: 400000

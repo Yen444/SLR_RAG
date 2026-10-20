@@ -1,0 +1,61 @@
+# Review configuration: edit freely, changes show up when the app reruns.
+
+# Work status of a paper. The first one is the default for new papers.
+statuses: [todo, in_progress, done]
+done_status: done             # counted in the progress bar
+
+# Include/exclude decision. The first one is the default.
+decisions: [undecided, include, exclude, maybe]
+exclude_decision: exclude     # choosing this asks for an exclusion reason
+exclusion_reasons:
+  - wrong population
+  - wrong intervention
+  - wrong study design
+  - wrong outcome
+  - not peer reviewed
+  - duplicate
+  - other
+
+# Extraction fields shown as a form for every paper.
+#   name:        identifier used as the JSON key (letters, digits, _)
+#   label:       shown in the UI (optional, defaults to name)
+#   type:        text | longtext | number | bool | select | multiselect
+#   options:     required for select / multiselect
+#   description: help text, also used as the instruction for "Suggest with AI"
+fields:
+  - name: study_design
+    label: Study design
+    type: select
+    options: [RCT, cohort, case-control, cross-sectional, qualitative, review, other]
+    description: Design of the primary study reported in the paper.
+
+  - name: population
+    label: Population
+    type: text
+    description: Who was studied (e.g. adults with type 2 diabetes).
+
+  - name: sample_size
+    label: Sample size
+    type: number
+    description: Total number of participants included in the analysis.
+
+  - name: country
+    label: Country
+    type: text
+    description: Country or countries where the study was conducted.
+
+  - name: methods
+    label: Methods
+    type: multiselect
+    options: [survey, interview, experiment, simulation, machine learning, statistical analysis]
+    description: Methods used in the study.
+
+  - name: open_data
+    label: Open data available
+    type: bool
+    description: Whether the paper states its data is publicly available.
+
+  - name: key_findings
+    label: Key findings
+    type: longtext
+    description: The main results of the paper in 2-4 sentences.

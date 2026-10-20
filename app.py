@@ -1,0 +1,492 @@
+"""Streamlit UI. Run with: streamlit run app.py"""
+
+import mimetypes
+
+import streamlit as st
+
+from slr_rag import chat, extraction, index, llm, store, viewer
+from slr_rag.catalog import scan_papers
+from slr_rag.config import FieldDef, load_review, load_settings
+
+mimetypes.add_type("text/javascript", ".mjs")  # PDF.js modules; the Windows registry may not know .mjs
+
+st.set_page_config(page_title="SLR RAG", page_icon="📚", layout="wide")
+ss = st.session_state
+
+# Panels are keyed containers (class "st-key-<key>"), styled here so PDF and review areas are clearly apart.
+st.html("""
+<style>
+.block-container { padding-top: 1.2rem; padding-bottom: 1rem; }
+[class*="st-key-header_"] {
+  background: #fff; border: 1px solid #d5dbe3; border-radius: 12px; padding: 8px 14px; }
+[class*="st-key-pdfpanel_"] {
+  background: #3c4043; border-radius: 12px; padding: 6px; }
+[class*="st-key-reviewpanel_"] {
+  background: #fff; border: 1px solid #d5dbe3; border-radius: 12px; padding: 14px 18px 18px;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, .06); }
+[class*="st-key-decisionbox_"] {
+  background: #f6f8fb; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; }
+.panel-title {
+  font-size: .75rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #64748b; }
+.st-key-paperlist button { justify-content: flex-start; text-align: left; padding: 1px 8px; min-height: 2rem; }
+.st-key-paperlist button p { font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+""")
+
+# Config is re-read on every rerun, so edits to config/*.yaml apply without restarting.
+try:
+    settings = load_settings()
+    review = load_review()
+except Exception as e:
+    st.error(f"Config error: {e}")
+    st.stop()
+
+
+@st.cache_data(show_spinner="Scanning papers…")
+def _scan(papers_dir: str, token: int):
+    return scan_papers(settings)
+
+
+@st.cache_resource(show_spinner="Downloading the PDF viewer (one time)…")
+def _pdfjs_ready() -> str | None:
+    try:
+        viewer.ensure_pdfjs()
+        return None
+    except Exception as e:
+        return str(e)
+
+
+ss.setdefault("scan_token", 0)
+ss.setdefault("compare", False)
+ss.setdefault("goto_counter", 0)
+papers = _scan(str(settings.papers_dir), ss.scan_token)
+by_id = {p.paper_id: p for p in papers}
+saved = store.load_all(settings)
+
+
+def ann_of(pid: str) -> dict:
+    """Always read fresh from disk, so both panels see each other's changes."""
+    return store.get(by_id[pid], settings, review)
+
+
+def status_icon(pid: str) -> str:
+    status = saved.get(pid, {}).get("status", review.statuses[0])
+    return "✅" if status == review.done_status else ("⚪" if status == review.statuses[0] else "🟡")
+
+
+def label(pid: str, max_len: int = 100) -> str:
+    decision = saved.get(pid, {}).get("decision", review.decisions[0])
+    tag = "" if decision == review.decisions[0] else f" · {decision}"
+    title = by_id[pid].title
+    title = title if len(title) <= max_len else title[: max_len - 1] + "…"
+    return f"{status_icon(pid)} {title}{tag}"
+
+
+def with_current(options: list, current) -> list:
+    """Keep a saved value selectable even if it was removed from the config."""
+    return options if current is None or current in options else [*options, current]
+
+
+# ---------- callbacks (run before the next rerun) ----------
+
+def _rescan():
+    ss.scan_token += 1
+
+
+def _save_attr(pid: str, attr: str, widget_key: str):
+    a = ann_of(pid)
+    a[attr] = ss[widget_key]
+    if attr == "decision" and a["decision"] != review.exclude_decision:
+        a["exclusion_reason"] = None
+    store.save(a, settings)
+
+
+def _open(slot: int, pid: str):
+    ss[f"slot{slot}"] = pid
+    if slot == 2:
+        ss.compare = True
+
+
+def _step(slot: int, ordered: list, delta: int):
+    current = ss.get(f"slot{slot}")
+    i = ordered.index(current) + delta if current in ordered else 0
+    ss[f"slot{slot}"] = ordered[i % len(ordered)]
+
+
+def _link(a_id: str, b_id: str):
+    store.link(ann_of(a_id), ann_of(b_id), settings)
+
+
+def _unlink(a_id: str, b_id: str):
+    store.unlink(ann_of(a_id), ann_of(b_id), settings)
+
+
+def _goto(pid: str, page: int | None, quote: str | None = None):
+    """Jump the PDF viewer to a page and highlight the start of a quote."""
+    ss.goto_counter += 1
+    phrase = " ".join((quote or "").split()[:8]) or None
+    ss[f"goto_{pid}"] = {"page": page, "search": phrase, "nonce": ss.goto_counter}
+
+
+# ---------- sidebar ----------
+
+with st.sidebar:
+    st.title("📚 SLR RAG")
+    if papers:
+        done = sum(saved.get(p.paper_id, {}).get("status") == review.done_status for p in papers)
+        st.progress(done / len(papers), text=f"{done} / {len(papers)} {review.done_status}")
+
+    with st.expander("⚙️ Models & tools"):
+        model_names = list(settings.chat_models)
+        if ss.get("chat_model_name") not in settings.chat_models:
+            ss.pop("chat_model_name", None)  # removed from config
+        st.selectbox("Chat model", model_names, index=model_names.index(settings.chat_model),
+                     key="chat_model_name", format_func=lambda n: f"{n} ({settings.chat_models[n].model})",
+                     help="Used for chat and Fill with AI. Add models under chat_models in config/settings.yaml.")
+        emb_spec = settings.embedding_models[settings.embedding_model]
+        st.caption(f"Embeddings: {settings.embedding_model} ({emb_spec.model})")
+        st.slider("PDF viewer height", 500, 1600, 900, step=50, key="pdf_height")
+        st.button("🔄 Rescan papers folder", on_click=_rescan, width="stretch")
+        if st.button("🧠 Build / update index", width="stretch",
+                     help="Embed new papers for related-paper search. Already indexed papers are skipped."):
+            bar = st.progress(0.0, text="Indexing…")
+            try:
+                n, no_text = index.index_papers(
+                    papers, settings, progress=lambda i, t, p: bar.progress(i / t, text=f"{i}/{t}: {p.title[:40]}")
+                )
+                bar.empty()
+                st.success(f"Indexed {n} new paper(s).")
+                if no_text:
+                    st.warning("No extractable text (scanned PDF?): " + ", ".join(p.filename for p in no_text))
+            except Exception as e:
+                bar.empty()
+                st.error(f"Indexing failed: {e}")
+        if papers:
+            csv = store.export_table(papers, settings, review).to_csv(index=False).encode("utf-8-sig")
+            st.download_button("⬇️ Export CSV", csv, "slr_export.csv", "text/csv", width="stretch")
+
+    missing = {llm.missing_key(s.provider) for s in (settings.chat_models[ss.chat_model_name], emb_spec)} - {None}
+    for env in sorted(missing):
+        st.warning(f"`{env}` is not set. Add it to `.env` to use AI features.")
+
+    with st.expander("🔎 Filter"):
+        status_filter = st.multiselect("Status", review.statuses)
+        decision_filter = st.multiselect("Decision", review.decisions)
+        query = st.text_input("Title contains").strip().lower()
+
+    filtered = [
+        p.paper_id
+        for p in papers
+        if (not status_filter or saved.get(p.paper_id, {}).get("status", review.statuses[0]) in status_filter)
+        and (not decision_filter or saved.get(p.paper_id, {}).get("decision", review.decisions[0]) in decision_filter)
+        and (not query or query in p.title.lower() or query in p.filename.lower())
+    ]
+
+    st.toggle("Compare two papers", key="compare")
+    target = 1
+    if ss.compare:
+        side = st.radio("Clicking a paper opens it", ["left", "right"], horizontal=True, key="open_side")
+        target = 1 if side == "left" else 2
+
+    # Paper list, grouped by sub-folder. `ordered` (the display order) is also what ◀ ▶ step through.
+    groups: dict[str, list[str]] = {}
+    for pid in filtered:
+        groups.setdefault(by_id[pid].folder, []).append(pid)
+    folders = sorted(groups, key=lambda f: (f != "", f.lower()))
+    ordered = [pid for f in folders for pid in groups[f]]
+
+    shown = f"{len(filtered)} of {len(papers)}" if len(filtered) != len(papers) else str(len(papers))
+    st.markdown(f"**Papers** ({shown})")
+    st.caption(f"✅ {review.done_status} · 🟡 in progress · ⚪ {review.statuses[0]}")
+    open_ids = {ss.get("slot1"), ss.get("slot2") if ss.compare else None}
+
+    def list_button(pid: str):
+        st.button(label(pid, 60), key=f"list_{pid}", type="primary" if pid in open_ids else "tertiary",
+                  width="stretch", on_click=_open, args=(target, pid), help=by_id[pid].filename)
+
+    with st.container(key="paperlist"):
+        if folders == [""]:
+            for pid in ordered:
+                list_button(pid)
+        for folder in folders if folders != [""] else []:
+            pids = groups[folder]
+            n_done = sum(saved.get(p, {}).get("status") == review.done_status for p in pids)
+            with st.expander(f"📁 {folder or '(top level)'} · {n_done}/{len(pids)}",
+                             expanded=any(p in open_ids for p in pids)):
+                for pid in pids:
+                    list_button(pid)
+
+if not papers:
+    st.info(f"No PDFs found. Put your papers in `{settings.papers_dir}` and click **Rescan papers folder**.")
+    st.stop()
+
+
+# ---------- panel parts ----------
+
+def field_widget(f: FieldDef, current, key: str):
+    kw = {"key": key, "help": f.description or None}
+    if f.type == "text":
+        return st.text_input(f.label, value=current or "", **kw).strip() or None
+    if f.type == "longtext":
+        return st.text_area(f.label, value=current or "", height=110, **kw).strip() or None
+    if f.type == "number":
+        value = float(current) if isinstance(current, (int, float)) and not isinstance(current, bool) else None
+        return st.number_input(f.label, value=value, **kw)
+    if f.type == "bool":
+        names = {None: "—", True: "Yes", False: "No"}
+        opts = [None, True, False]
+        return st.selectbox(f.label, opts, index=opts.index(current) if current in opts else 0,
+                            format_func=names.get, **kw)
+    if f.type == "select":
+        opts = [None, *with_current(f.options, current)]
+        return st.selectbox(f.label, opts, index=opts.index(current),
+                            format_func=lambda x: "—" if x is None else x, **kw)
+    if f.type == "multiselect":
+        current = current or []
+        opts = f.options + [x for x in current if x not in f.options]
+        return st.multiselect(f.label, opts, default=current, **kw)
+    raise ValueError(f.type)
+
+
+def render_header(slot: int, pid: str):
+    paper = by_id[pid]
+    position = f"{ordered.index(pid) + 1} / {len(ordered)}" if pid in ordered else "not in filter"
+    where = f"📁 {paper.folder} · " if paper.folder else ""
+    with st.container(key=f"header_{slot}"):
+        c1, c2, c3 = st.columns([1, 12, 1], vertical_alignment="center")
+        c1.button("◀", key=f"prev_{slot}", on_click=_step, args=(slot, ordered, -1), help="Previous paper",
+                  disabled=not ordered)
+        with c2:
+            st.markdown(f"**{paper.title}**")
+            st.caption(f"Paper {position} · {where}{paper.filename.split('/')[-1]}")
+        c3.button("▶", key=f"next_{slot}", on_click=_step, args=(slot, ordered, 1), help="Next paper",
+                  disabled=not ordered)
+
+
+def render_pdf(slot: int, pid: str, height: int):
+    with st.container(key=f"pdfpanel_{slot}"):
+        error = _pdfjs_ready()
+        if error:
+            st.warning(f"Could not download the PDF.js viewer ({error}). Showing the browser's viewer instead.")
+            st.iframe(by_id[pid].path, height=height)
+            return
+        goto = ss.get(f"goto_{pid}") or {}
+        st.iframe(viewer.viewer_url(by_id[pid], goto.get("page"), goto.get("search"), goto.get("nonce", 0)),
+                  height=height)
+
+
+def render_decision(slot: int, pid: str, ann: dict):
+    with st.container(key=f"decisionbox_{slot}"):
+        c1, c2, c3 = st.columns(3)
+        statuses = with_current(review.statuses, ann["status"])
+        c1.selectbox("Status", statuses, index=statuses.index(ann["status"]), key=f"status_{slot}_{pid}",
+                     on_change=_save_attr, args=(pid, "status", f"status_{slot}_{pid}"))
+        decisions = with_current(review.decisions, ann["decision"])
+        c2.selectbox("Decision", decisions, index=decisions.index(ann["decision"]), key=f"decision_{slot}_{pid}",
+                     on_change=_save_attr, args=(pid, "decision", f"decision_{slot}_{pid}"))
+        excluding = ann["decision"] == review.exclude_decision
+        reasons = [None, *with_current(review.exclusion_reasons, ann["exclusion_reason"])]
+        c3.selectbox("Exclusion reason", reasons, index=reasons.index(ann["exclusion_reason"]),
+                     format_func=lambda x: "— choose —" if x is None else x, key=f"reason_{slot}_{pid}",
+                     disabled=not excluding, on_change=_save_attr, args=(pid, "exclusion_reason", f"reason_{slot}_{pid}"),
+                     help=None if excluding else f"Set the decision to '{review.exclude_decision}' to choose a reason")
+        st.text_input("Reason (optional)", value=ann.get("reason_text", ""), key=f"rtext_{slot}_{pid}",
+                      placeholder="Your own reason, e.g. if none in the list fits",
+                      on_change=_save_attr, args=(pid, "reason_text", f"rtext_{slot}_{pid}"))
+        st.text_area("Reason note (optional)", value=ann.get("reason_note", ""), key=f"rnote_{slot}_{pid}",
+                     height=75, placeholder="Details about the decision",
+                     on_change=_save_attr, args=(pid, "reason_note", f"rnote_{slot}_{pid}"))
+
+
+def render_extraction(slot: int, pid: str, ann: dict):
+    if not review.fields:
+        st.info("No fields defined. Add them under `fields:` in `config/review.yaml`.")
+        return
+    paper = by_id[pid]
+    draft_key, ver_key = f"draft_{pid}", f"ver_{pid}"
+
+    if st.button("✨ Fill with AI", key=f"ai_{slot}_{pid}", type="primary",
+                 help="Read the paper and pre-fill every field. Nothing is saved until you click Save."):
+        with st.spinner("Reading the paper and extracting fields…"):
+            try:
+                result = extraction.suggest(paper, settings, review, model=ss.chat_model_name)
+            except Exception as e:
+                st.error(f"AI extraction failed: {e}")
+                result = None
+        if result is not None:
+            a = ann_of(pid)
+            a["ai_suggestions"] = result
+            a["ai_model"] = ss.chat_model_name
+            store.save(a, settings)
+            ss[draft_key] = {name: r["value"] for name, r in result.items() if r and r.get("value") not in (None, [])}
+            ss[ver_key] = ss.get(ver_key, 0) + 1  # new widget keys, so widgets pick up the AI values
+            st.rerun()
+
+    draft = ss.get(draft_key, {})
+    suggestions = ann.get("ai_suggestions") or {}
+    if draft:
+        st.info("AI values are filled in. Review them, then click **Save** (nothing is saved yet).")
+
+    ver = ss.get(ver_key, 0)
+    with st.form(f"form_{slot}_{pid}_{ver}", border=False):
+        values = {}
+        for f in review.fields:
+            current = draft.get(f.name, ann["fields"].get(f.name))
+            values[f.name] = field_widget(f, current, key=f"fld_{slot}_{pid}_{ver}_{f.name}")
+            s = suggestions.get(f.name) or {}
+            if s.get("evidence"):
+                page = f" (p. {s['page']})" if s.get("page") else ""
+                st.caption(f"🤖 AI: **{s.get('value')}** — “{s['evidence'][:250]}”{page}")
+        c1, c2 = st.columns(2)
+        save_clicked = c1.form_submit_button("💾 Save", type="primary", width="stretch")
+        discard_clicked = c2.form_submit_button("Discard unsaved", width="stretch")
+
+    if save_clicked:
+        a = ann_of(pid)
+        a["fields"].update(values)
+        store.save(a, settings)
+        ss.pop(draft_key, None)
+        st.toast("Saved ✓")
+        st.rerun()
+    if discard_clicked:
+        ss.pop(draft_key, None)
+        ss[ver_key] = ver + 1
+        st.rerun()
+
+    evidence = [(f, suggestions[f.name]) for f in review.fields
+                if (suggestions.get(f.name) or {}).get("page")]
+    if evidence:
+        with st.expander("🔍 Show evidence in the PDF"):
+            for f, s in evidence:
+                st.button(f"p. {s['page']} · {f.label}", key=f"goto_{slot}_{pid}_{f.name}",
+                          on_click=_goto, args=(pid, s["page"], s.get("evidence")),
+                          help="Jump to the page and highlight the quote")
+
+
+def render_chat(slot: int, pid: str, ann: dict, height: int):
+    history = ann["chat_history"]
+    box = st.container(height=height)
+    with box:
+        if not history:
+            st.caption("Ask anything about this paper, e.g. *What is the main limitation?* "
+                       "or *Which papers in my collection are related to this one?*")
+        for m in history:
+            with st.chat_message(m["role"]):
+                st.markdown(m["content"])
+
+    prompt = st.chat_input("Ask about this paper…", key=f"chatin_{slot}_{pid}")
+    if prompt:
+        history = [*history, {"role": "user", "content": prompt}]
+        with box:
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            with st.chat_message("assistant"):
+                try:
+                    answer = st.write_stream(chat.stream_answer(by_id[pid], history, settings, ss.chat_model_name))
+                except Exception as e:
+                    st.error(f"Chat failed: {e}")
+                    return
+        a = ann_of(pid)
+        a["chat_history"] = [*history, {"role": "assistant", "content": answer}]
+        store.save(a, settings)
+        st.rerun()
+
+    if history and st.button("🗑️ Clear chat", key=f"clear_{slot}_{pid}"):
+        a = ann_of(pid)
+        a["chat_history"] = []
+        store.save(a, settings)
+        st.rerun()
+
+
+def render_related(slot: int, pid: str, ann: dict):
+    other = 2 if slot == 1 else 1
+
+    st.markdown("**Linked papers**")
+    if not ann["linked_papers"]:
+        st.caption("None yet. Link papers from the search results below.")
+    for lid in ann["linked_papers"]:
+        if lid not in by_id:
+            st.caption(f"{lid} (PDF no longer in folder)")
+            continue
+        c1, c2, c3 = st.columns([6, 1.5, 1.5])
+        c1.write(label(lid))
+        c2.button("Open", key=f"openl_{slot}_{pid}_{lid}", on_click=_open, args=(other, lid),
+                  help="Open side by side")
+        c3.button("Unlink", key=f"unlink_{slot}_{pid}_{lid}", on_click=_unlink, args=(pid, lid))
+
+    st.divider()
+    st.markdown("**Find related papers in the collection**")
+    results_key = f"related_{pid}"
+    q = st.text_input("Search by topic", key=f"q_{slot}_{pid}", placeholder="e.g. deep learning for crop yield")
+    c1, c2 = st.columns(2)
+    try:
+        if c1.button("Similar to this paper", key=f"sim_{slot}_{pid}", width="stretch",
+                     help=f"Top {settings.similar_top_k} papers by similarity of title + abstract"):
+            ss[results_key] = index.similar_to_paper(by_id[pid], settings)
+        if c2.button("Search", key=f"search_{slot}_{pid}", disabled=not q, width="stretch",
+                     help="Papers with a passage matching the topic"):
+            ss[results_key] = index.search(q, settings, exclude=pid)
+    except Exception as e:
+        st.error(str(e))
+
+    for rank, r in enumerate(ss.get(results_key, []), 1):
+        rid = r["paper_id"]
+        if rid not in by_id:
+            continue
+        with st.container(border=True):
+            where = f"p. {r['page']}" if r.get("page") else "abstract"
+            st.markdown(f"**{rank}.** {label(rid)}  \n<small>similarity {r['score']:.2f} · {where}</small>",
+                        unsafe_allow_html=True)
+            st.caption(r["snippet"][:300] + "…")
+            c1, c2 = st.columns(2)
+            if rid in ann["linked_papers"]:
+                c1.caption("🔗 linked")
+            else:
+                c1.button("🔗 Link", key=f"link_{slot}_{pid}_{rid}", on_click=_link, args=(pid, rid))
+            c2.button("Open side by side", key=f"openr_{slot}_{pid}_{rid}", on_click=_open, args=(other, rid))
+
+    st.divider()
+    st.text_area("Notes", value=ann.get("notes", ""), key=f"notes_{slot}_{pid}", height=120,
+                 on_change=_save_attr, args=(pid, "notes", f"notes_{slot}_{pid}"))
+
+
+def render_review(slot: int, pid: str, chat_height: int):
+    ann = ann_of(pid)
+    with st.container(key=f"reviewpanel_{slot}"):
+        st.html('<div class="panel-title">Review</div>')
+        render_decision(slot, pid, ann)
+        t1, t2, t3 = st.tabs(["📝 Extraction", "💬 Chat", "🔗 Related & notes"])
+        with t1:
+            render_extraction(slot, pid, ann)
+        with t2:
+            render_chat(slot, pid, ann, chat_height)
+        with t3:
+            render_related(slot, pid, ann)
+
+
+def current_paper(slot: int) -> str:
+    key = f"slot{slot}"
+    if ss.get(key) not in by_id:
+        pool = ordered or [p.paper_id for p in papers]
+        ss[key] = pool[min(slot - 1, len(pool) - 1)]
+    return ss[key]
+
+
+# ---------- main ----------
+
+height = ss.get("pdf_height", 900)
+if ss.compare:
+    for slot, col in enumerate(st.columns(2), 1):
+        with col:
+            pid = current_paper(slot)
+            render_header(slot, pid)
+            render_pdf(slot, pid, height)
+            render_review(slot, pid, chat_height=420)
+else:
+    pid = current_paper(1)
+    render_header(1, pid)
+    left, right = st.columns([6, 5])
+    with left:
+        render_pdf(1, pid, height)
+    with right:
+        render_review(1, pid, chat_height=height - 330)
