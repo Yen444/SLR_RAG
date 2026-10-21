@@ -8,6 +8,7 @@ CSV files, only linked papers are reviewed. The CSVs are never modified; `export
 """
 
 import dataclasses
+import html
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -18,7 +19,10 @@ from . import store
 from .catalog import Paper
 from .config import ReviewConfig, Settings
 
-ID, PDF, TITLE, ABSTRACT, DECISION = "item_id", "pdf_filename", "title", "abstract", "final_decision"
+# Databases name their columns differently (title / Document Title / Item Title, ...). Each piece of
+# information is copied into an internal "_<name>" column, found via settings.csv_columns.
+ID, PDF, TITLE, ABSTRACT, NOTE, DECISION = "_item_id", "_pdf_filename", "_title", "_abstract", "_note", "_final_decision"
+AUTHORS, YEAR, VENUE, DOI = "_authors", "_year", "_venue", "_doi"
 FOLDER = "source_folder"  # added column: the CSV's folder relative to papers_dir ('' for the top level)
 _DECISION_SUFFIX = re.compile(r"_(included|excluded)$", re.IGNORECASE)
 
@@ -41,22 +45,41 @@ def _rel_folder(path: Path, settings: Settings) -> str:
     return "" if folder == "." else folder
 
 
+def _key(column: str) -> str:
+    return re.sub(r"[\s_]+", "", column).casefold()
+
+
+def _internal_columns(frame: pd.DataFrame, settings: Settings) -> pd.DataFrame:
+    """Add the "_<name>" columns, each copied from the first matching column of this CSV ('' if none)."""
+    by_key = {}
+    for column in frame.columns:
+        by_key.setdefault(_key(column), column)
+    for name, candidates in settings.csv_columns.items():
+        column = next((by_key[_key(c)] for c in candidates if _key(c) in by_key), None)
+        frame[f"_{name}"] = frame[column] if column else ""
+    frame[TITLE] = frame[TITLE].map(lambda t: " ".join(html.unescape(t).split()))  # "from&#xa0;Hybrid"
+    frame[YEAR] = frame[YEAR].map(lambda y: (re.search(r"\d{4}", y) or [""])[0])  # "2016.0" -> "2016"
+    return frame
+
+
+def internal_columns(settings: Settings) -> list[str]:
+    return [f"_{name}" for name in settings.csv_columns]
+
+
 def load_records(settings: Settings) -> pd.DataFrame:
-    """All CSV rows as text ('' for empty cells), plus source_csv and source_folder columns.
+    """All CSV rows as text ('' for empty cells), plus source_csv, source_folder and the "_<name>" columns.
 
     An item_id repeated within one folder is dropped (the first row is kept)."""
     frames = [
-        pd.read_csv(f, encoding="utf-8-sig", dtype=str, keep_default_na=False).assign(
-            source_csv=f.relative_to(settings.papers_dir).as_posix(), **{FOLDER: _rel_folder(f, settings)})
+        _internal_columns(pd.read_csv(f, encoding="utf-8-sig", dtype=str, keep_default_na=False).assign(
+            source_csv=f.relative_to(settings.papers_dir).as_posix(), **{FOLDER: _rel_folder(f, settings)}), settings)
         for f in csv_files(settings)
     ]
     if not frames:
         return pd.DataFrame()
     records = pd.concat(frames, ignore_index=True).fillna("")
-    if ID in records:
-        repeated = records[ID].ne("") & records.duplicated([FOLDER, ID])
-        records = records[~repeated].reset_index(drop=True)
-    return records
+    repeated = records[ID].ne("") & records.duplicated([FOLDER, ID])
+    return records[~repeated].reset_index(drop=True)
 
 
 def _name(path: str) -> str:
@@ -108,21 +131,37 @@ def scope(papers: list[Paper], records: pd.DataFrame) -> Scope:
     )
 
 
+def split_authors(text: str) -> list[str]:
+    """Author lists as the databases write them:
+    'Nai, Roberto and Sulis, Emilio' (BibTeX), 'S. Lee; I. Choi' (IEEE), 'O Vasilecas, T Savickas…'
+    (Google Scholar) and 'Anti AlmanFabrizio Maria Maggi' (Springer, no separator)."""
+    text = text.replace("…", "").strip()
+    if " and " in text:
+        parts = text.split(" and ")
+    elif ";" in text:
+        parts = text.split(";")
+    elif "," in text and all(" " in p.strip() for p in text.split(",")):  # not one BibTeX "Nai, Roberto"
+        parts = text.split(",")
+    elif "," in text:
+        parts = [text]
+    else:
+        parts = re.split(r"(?<=[a-z])(?=[A-Z])", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
 def citation(row: dict) -> str:
-    """'Nai et al. 2025 · Journal' from BibTeX-style author/year/journal columns."""
+    """'Nai et al. 2025 · Journal'."""
     def surname(author: str) -> str:  # "Nai, Roberto" or "Roberto Nai"
         return author.split(",")[0] if "," in author else author.split()[-1]
 
-    authors = [a.strip() for a in (row.get("author") or "").split(" and ") if a.strip()]
-    names = [surname(a) for a in authors]
+    names = [surname(a) for a in split_authors(row.get(AUTHORS) or "")]
     first = names[0] + " et al." if len(names) > 2 else " & ".join(names)
-    who = " ".join(x for x in (first, row.get("year") or "") if x)
-    venue = row.get("journal") or row.get("booktitle") or ""
-    return " · ".join(x for x in (who, venue) if x)
+    who = " ".join(x for x in (first, row.get(YEAR) or "") if x)
+    return " · ".join(x for x in (who, row.get(VENUE) or "") if x)
 
 
 def doi_url(row: dict) -> str:
-    doi = (row.get("doi") or "").strip()
+    doi = (row.get(DOI) or "").strip()
     return doi if not doi or doi.startswith("http") else f"https://doi.org/{doi}"
 
 
@@ -155,7 +194,7 @@ def export(records: pd.DataFrame, sc: Scope, papers: list[Paper], settings: Sett
                "review_reason_text", "review_reason_note", "review_notes", "linked_item_ids",
                *store.field_columns({}, review)]
     added = pd.DataFrame(rows, index=records.index, columns=columns).astype(object).fillna("")
-    out = records.copy()
+    out = records.drop(columns=internal_columns(settings), errors="ignore")
     for name in columns:
         out[name if name not in out else f"extract_{name}"] = added[name]  # never overwrite an original column
     return out

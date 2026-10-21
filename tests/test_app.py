@@ -70,17 +70,17 @@ def test_extraction_form_saves(tmp_path, monkeypatch):
     at = _app(tmp_path, monkeypatch)
     labels = [e.label for e in at.expander]
     assert any(l.startswith("**A. General information** · 0/5") for l in labels)
-    assert any(l.startswith("**G. Additional notes**") for l in labels)
+    assert any(l.startswith("**B. Input**") for l in labels) and any(l.startswith("**H. Additional notes**") for l in labels)
     next(s for s in at.selectbox if s.label == "A1. Application domain").set_value("Domain-specific")
     next(t for t in at.text_input if t.label == "Domain (if domain-specific)").set_value("healthcare")
     next(m for m in at.multiselect if m.label == "A3. Target application").set_value(["Process discovery"])
-    next(t for t in at.text_area if t.label == "B3. Core mechanism").set_value("Discrete-event simulation.")
+    next(t for t in at.text_area if t.label == "C1. Core mechanism").set_value("Discrete-event simulation.")
     next(b for b in at.button if b.label == "💾 Save").click().run()
     assert not at.exception
     fields = _annotations(tmp_path)[0]["fields"]
-    assert fields["A1_application_domain"] == "Domain-specific" and fields["A1_application_domain_specify"] == "healthcare"
-    assert fields["A3_target_application"] == ["Process discovery"]
-    assert fields["B3_core_mechanism"] == "Discrete-event simulation."
+    assert fields["application_domain"] == "Domain-specific" and fields["application_domain_specify"] == "healthcare"
+    assert fields["target_application"] == ["Process discovery"]
+    assert fields["core_mechanism"] == "Discrete-event simulation."
     assert any(l.startswith("**A. General information** · 2/5") for l in (e.label for e in at.expander))
 
 
@@ -92,8 +92,25 @@ def _list_titles(at) -> list[str]:
     return [b.label.split(". ", 1)[1] for b in _list_rows(at)]
 
 
+def _show_all(at):
+    at.segmented_control(key="status_view").set_value("__all__").run()
+    return at
+
+
+def test_list_hidden_until_a_filter_is_picked(tmp_path, monkeypatch):
+    at = _app(tmp_path, monkeypatch, files=("a.pdf", "b.pdf"))
+    assert not _list_rows(at) and any("to list the papers" in c.value for c in at.caption)
+    assert _header_title(at) == "**Paper number 0 about things**"  # a paper is still open
+    _show_all(at)
+    assert len(_list_rows(at)) == 2
+    at.segmented_control(key="status_view").set_value(None).run()  # click the button again: hidden
+    assert not _list_rows(at)
+    at.multiselect(key="decision_filter").set_value(["include"]).run()
+    assert len(_list_rows(at)) == 2
+
+
 def test_paper_list_and_prev_next(tmp_path, monkeypatch):
-    at = _app(tmp_path, monkeypatch, files=("a.pdf", "b.pdf", "c.pdf"))
+    at = _show_all(_app(tmp_path, monkeypatch, files=("a.pdf", "b.pdf", "c.pdf")))
     assert _list_titles(at) == [f"Paper number {i} about things" for i in range(3)]
     assert _header_title(at) == "**Paper number 0 about things**"
     _list_rows(at)[2].click().run()
@@ -106,10 +123,14 @@ def test_paper_list_and_prev_next(tmp_path, monkeypatch):
 
 
 def test_paper_list_folders_and_search(tmp_path, monkeypatch):
-    at = _app(tmp_path, monkeypatch, files=("top.pdf", "included/x.pdf", "excluded/y.pdf"))
+    at = _show_all(_app(tmp_path, monkeypatch, files=("top.pdf", "included/x.pdf", "excluded/y.pdf")))
     assert [c.value for c in at.caption if c.value.startswith("📁")] == ["📁 (top level)", "📁 excluded", "📁 included"]
     at.text_input(key="list_query").set_value("included").run()
     assert len(_list_rows(at)) == 1
+    at.text_input(key="list_query").set_value("").run()
+    at.multiselect(key="folder_filter").set_value(["excluded", "included"]).run()  # database filter
+    assert len(_list_rows(at)) == 2
+    assert at.segmented_control(key="status_view").options[0] == "All · 2"  # counts follow the filter
     assert not at.exception
 
 
@@ -184,8 +205,8 @@ def test_csv_mode_lists_only_screened_papers_and_excluded_view(tmp_path, monkeyp
          "pdf_filename": "sd_9_included.pdf", "note": ""},
     ]
     gs = [{"item_id": "gs_1", "title": "Scholar paper", "pdf_filename": "gs_1_included.pdf"}]
-    at = _app(tmp_path, monkeypatch, csvs={"sd/results.csv": sd, "gs/results.csv": gs},
-              files=("sd/sd_1_included.pdf", "sd/sd_2.pdf", "sd/unrelated.pdf", "gs/gs_1_included.pdf"))
+    at = _show_all(_app(tmp_path, monkeypatch, csvs={"sd/results.csv": sd, "gs/results.csv": gs},
+                        files=("sd/sd_1_included.pdf", "sd/sd_2.pdf", "sd/unrelated.pdf", "gs/gs_1_included.pdf")))
     # titles from the CSVs, grouped by database folder
     assert _list_titles(at) == ["Scholar paper", "Screened paper one", "Screened paper two"]
     assert [c.value for c in at.caption if c.value.startswith("📁")][:2] == ["📁 gs", "📁 sd"]

@@ -76,6 +76,22 @@ class ModelSpec(BaseModel):
     params: dict = {}  # passed to the model class, e.g. temperature, base_url
 
 
+# Screening-CSV columns: for each piece of information, the column names that may hold it.
+# The first name that exists in a CSV is used (ignoring case, spaces and underscores).
+DEFAULT_CSV_COLUMNS = {
+    "item_id": ["item_id"],
+    "pdf_filename": ["pdf_filename"],
+    "title": ["title", "Document Title", "Item Title"],
+    "abstract": ["abstract"],
+    "authors": ["author", "authors"],
+    "year": ["year", "Publication Year"],
+    "venue": ["journal", "booktitle", "Publication Title", "Source"],
+    "doi": ["doi", "Item DOI"],
+    "note": ["note"],
+    "final_decision": ["final_decision"],
+}
+
+
 class Settings(BaseModel):
     papers_dir: Path = Path("papers")
     data_dir: Path = Path("data")
@@ -87,6 +103,7 @@ class Settings(BaseModel):
     chunk_overlap: int = 200
     similar_top_k: int = 10
     max_context_chars: int = 400_000
+    csv_columns: dict[str, list[str]] = {}  # merged over DEFAULT_CSV_COLUMNS
 
     @model_validator(mode="after")
     def _check(self):
@@ -96,6 +113,7 @@ class Settings(BaseModel):
             raise ValueError(
                 f"embedding_model '{self.embedding_model}' is not in embedding_models: {sorted(self.embedding_models)}"
             )
+        self.csv_columns = DEFAULT_CSV_COLUMNS | self.csv_columns
         if not self.papers_dir.is_absolute():
             self.papers_dir = (ROOT / self.papers_dir).resolve()
         if not self.data_dir.is_absolute():

@@ -75,11 +75,14 @@ def test_no_csv_means_no_records(settings):
 
 
 def test_citation_and_doi():
-    assert screening.citation({"author": "Nai, Roberto and Sulis, Emilio and X, Y", "year": "2025",
-                               "journal": "J"}) == "Nai et al. 2025 · J"
-    assert screening.citation({"author": "Jia Wei and Chun Ouyang", "year": "2024"}) == "Wei & Ouyang 2024"
-    assert screening.doi_url({"doi": "10.2/y"}) == "https://doi.org/10.2/y"
-    assert screening.doi_url({"doi": "https://doi.org/10.1/x"}) == "https://doi.org/10.1/x"
+    def cite(authors, year="", venue=""):
+        return screening.citation({screening.AUTHORS: authors, screening.YEAR: year, screening.VENUE: venue})
+
+    assert cite("Nai, Roberto and Sulis, Emilio and X, Y", "2025", "J") == "Nai et al. 2025 · J"
+    assert cite("Jia Wei and Chun Ouyang", "2024") == "Wei & Ouyang 2024"
+    assert cite("Nai, Roberto", "2025") == "Nai 2025"  # one BibTeX author, not two
+    assert screening.doi_url({screening.DOI: "10.2/y"}) == "https://doi.org/10.2/y"
+    assert screening.doi_url({screening.DOI: "https://doi.org/10.1/x"}) == "https://doi.org/10.1/x"
 
 
 def test_export_keeps_original_columns_and_links_across_databases(screened, settings, review):
@@ -100,3 +103,39 @@ def test_export_keeps_original_columns_and_links_across_databases(screened, sett
     assert row["linked_item_ids"] == "gs_1"  # linked across databases
     assert df[df["title"] == "Scholar One"].iloc[0]["linked_item_ids"] == "sd_1"
     assert df[df["title"] == "No PDF"].iloc[0]["review_status"] == ""
+
+
+def test_column_names_differ_across_databases(settings):
+    _pdf(settings, "ieee/ieee_2_included.pdf")
+    _pdf(settings, "springer/springer_4_included.pdf")
+    _pdf(settings, "gs/gs_65_included.pdf")
+    pd.DataFrame([{"Document Title": "IEEE paper", "Authors": "S. Lee; I. Choi; H. Kim", "Publication Year": "2020",
+                   "Publication Title": "IEEE Access", "DOI": "10.1109/x", "Abstract": "ieee abstract",
+                   "item_id": "ieee_2", "pdf_filename": r"C:\\x\\ieee_2_included.pdf"}]).to_csv(
+        settings.papers_dir / "ieee" / "included.csv", index=False)
+    pd.DataFrame([{"Item Title": "Logs from&#xa0;Hybrid Models", "Authors": "Anti AlmanFabrizio Maria Maggi",
+                   "Publication Year": "2024.0", "Publication Title": "BPM Workshops", "Item DOI": "10.1007/y",
+                   "item_id": "springer_4", "pdf_filename": ""}]).to_csv(
+        settings.papers_dir / "springer" / "included.csv", index=False)
+    pd.DataFrame([{"Title": "Scholar paper", "Authors": "O Vasilecas, T Savickas, K Normantas…", "Year": "2016.0",
+                   "Source": "Proc. X", "item_id": "gs_65", "pdf_filename": ""}]).to_csv(
+        settings.papers_dir / "gs" / "included.csv", index=False)
+
+    papers = scan_papers(settings)
+    records = screening.load_records(settings)
+    sc = screening.scope(papers, records)
+    assert sorted(p.title for p in sc.papers) == ["IEEE paper", "Logs from Hybrid Models", "Scholar paper"]
+    cite = {r[screening.TITLE]: screening.citation(r) for r in records.to_dict("records")}
+    assert cite == {"IEEE paper": "Lee et al. 2020 · IEEE Access",
+                    "Logs from Hybrid Models": "Alman & Maggi 2024 · BPM Workshops",
+                    "Scholar paper": "Vasilecas et al. 2016 · Proc. X"}
+    assert screening.doi_url(records[records[screening.TITLE] == "Logs from Hybrid Models"].iloc[0]) == \
+        "https://doi.org/10.1007/y"
+    df = screening.export(records, sc, sc.papers, settings, _review())
+    assert not [c for c in df.columns if c.startswith("_")]  # internal columns are not exported
+    assert "Document Title" in df.columns and "Item Title" in df.columns
+
+
+def _review():
+    from slr_rag.config import ReviewConfig
+    return ReviewConfig(statuses=["todo", "done"], decisions=["include", "exclude"])

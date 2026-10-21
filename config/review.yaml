@@ -19,18 +19,19 @@ ai_instructions: |
   This systematic literature review is about approaches that generate, simulate or augment
   synthetic event logs for process mining.
   - Only report what the paper states. Prefer null over a guess.
-  - Leave every "Notes" field (A5, B8, C4, D3, E6, G1) empty: they are for the human coder.
+  - Leave every "Notes" field (A5, B2, C6, D4, E4, F6, H1) empty: they are for the human coder.
   - Distinguish what the authors contribute from functionality inherited from existing tools.
-  - B5: list a perspective only if the generation mechanism explicitly models, controls or reproduces it,
+  - C3: list a perspective only if the generation mechanism explicitly models, controls or reproduces it,
     not just because an attribute appears in the output.
-  - D1: select only attributes present in the generated output, not attributes of the input or model.
-  - F2: write limitations you notice yourself, and mark them as interpretation ("Possibly ...").
+  - D2: select only attributes present in the generated output, not attributes of the input or model.
+  - G2: write limitations you notice yourself, and mark them as interpretation ("Possibly ...").
   - Multi-select fields: choose every option that applies. Pick "Other (specify)" only when no option
     fits, and then write the value in the `specify` text.
 
-# Extraction form, grouped in sections. Every field may stay empty.
-#   name:        identifier used as the JSON key and CSV column (letters, digits, _)
-#   label:       shown in the UI
+# Extraction form, grouped in sections (collapsed in the app until opened). Every field may stay empty.
+#   name:        identifier used as the JSON key and CSV column (letters, digits, _). Keep it when you
+#                reorder or renumber fields, otherwise saved values are no longer shown.
+#   label:       shown in the UI (the A1/B2 codes are only part of the label)
 #   type:        text | longtext | number | bool | select | multiselect
 #   options:     required for select / multiselect
 #   description: help text, also the instruction for "Fill with AI"
@@ -40,21 +41,21 @@ ai_instructions: |
 sections:
   - title: A. General information
     fields:
-      - name: A1_application_domain
+      - name: application_domain
         label: A1. Application domain
         type: select
         options: [General-purpose, Domain-specific]
         specify: Domain (if domain-specific)
         description: Is the approach general-purpose or built for a specific domain? If domain-specific, name the domain.
 
-      - name: A2_main_goal
+      - name: main_goal
         label: A2. Main goal
         type: longtext
         height: 68
         description: What is the primary objective of the proposed approach?
         placeholder: e.g. Generate realistic event logs with resource behaviour to benchmark discovery algorithms
 
-      - name: A3_target_application
+      - name: target_application
         label: A3. Target application
         type: multiselect
         options:
@@ -72,7 +73,7 @@ sections:
         specify: Other (specify)
         description: What are the generated logs intended to be used for?
 
-      - name: A4_approach_maturity
+      - name: approach_maturity
         label: A4. Approach maturity
         type: select
         options:
@@ -84,30 +85,30 @@ sections:
         specify: Other (specify) / link to the tool
         description: How mature is the implementation? "Publicly available" needs a stated link or repository; give it in the specify box.
 
-      - name: A5_notes
+      - name: general_info_notes
         label: A5. Notes
         type: longtext
         height: 68
         description: Additional notes about the paper's general characteristics, purpose, domain, or application.
 
-  - title: B. Generation / simulation / augmentation methodology
+  - title: B. Input
     fields:
-      - name: B1_required_input
+      - name: required_input
         label: B1. Required input
         type: longtext
-        height: 68
         description: What inputs are necessary to run the approach?
         placeholder: e.g. BPMN model with simulation parameters; an existing event log
 
-      - name: B2_generated_output
-        label: B2. Generated output
+      - name: input_notes
+        label: B2. Notes
         type: longtext
         height: 68
-        description: What does the approach produce?
-        placeholder: e.g. Event log with start/end timestamps and resources; also a simulation model
+        description: Additional information about the required input.
 
-      - name: B3_core_mechanism
-        label: B3. Core mechanism
+  - title: C. Generation / simulation / augmentation methodology
+    fields:
+      - name: core_mechanism
+        label: C1. Core mechanism
         type: longtext
         height: 320
         description: >-
@@ -115,13 +116,13 @@ sections:
           including the main processing steps and relevant execution mechanisms.
         placeholder: "Step by step: 1) … 2) … 3) …  Execution mechanism (e.g. discrete-event simulation, token game, generative model, LLM)…"
 
-      - name: B4_methodological_novelty
-        label: B4. Main methodological novelty
+      - name: methodological_novelty
+        label: C2. Main methodological novelty
         type: longtext
         description: What specific methodological contribution does the paper introduce compared with existing approaches?
 
-      - name: B5_process_perspectives
-        label: B5. Modeled process perspectives
+      - name: process_perspectives
+        label: C3. Modeled process perspectives
         type: longtext
         description: >-
           Which aspects of process behaviour are explicitly modelled, controlled, or reproduced by the generation
@@ -129,75 +130,37 @@ sections:
           modelling solely from the presence of an attribute in the generated output.
         placeholder: e.g. Control flow (BPMN), time (duration distributions), resources (calendars, allocation)
 
-      - name: B6_additional_capabilities
-        label: B6. Additional generation capabilities
+      - name: additional_capabilities
+        label: C4. Additional generation capabilities
         type: longtext
         description: >-
           Additional capabilities, such as noise injection, trace variability control, constraint satisfaction,
           negative trace generation, or conditional generation.
 
-      - name: B7_external_tools
-        label: B7. External tools and dependencies
+      - name: external_tools
+        label: C5. External tools and dependencies
         type: longtext
         description: >-
           Which existing simulators, libraries, solvers, models, or platforms are used? Distinguish the authors'
           contributions from inherited functionality.
         placeholder: "e.g. Built on BIMP (inherited: simulation engine); new: calendar discovery"
 
-      - name: B8_notes
-        label: B8. Notes
+      - name: methodology_notes
+        label: C6. Notes
         type: longtext
         height: 68
         description: Additional methodological details or observations.
 
-  - title: C. Configurability
+  - title: D. Output (generated synthetic event log)
     fields:
-      - name: C1_configurable_aspects
-        label: C1. Configurable aspects
-        type: multiselect
-        options:
-          - Process model / control flow
-          - Number of cases / log size
-          - Trace length
-          - Arrival patterns
-          - Activity durations
-          - Resource availability / allocation
-          - Data attributes
-          - Routing probabilities
-          - Noise level
-          - Random seed
-          - Other (specify)
-        specify: Other (specify)
-        description: Which aspects can users explicitly configure?
-
-      - name: C2_configuration_mechanism
-        label: C2. Configuration mechanism
-        type: multiselect
-        options:
-          - Graphical user interface
-          - Configuration file
-          - API / programming interface
-          - Model annotations
-          - Prompts / natural language
-          - Other (specify)
-        specify: Other (specify)
-        description: How does the user configure the generation?
-
-      - name: C3_configuration_limitations
-        label: C3. Configuration limitations
+      - name: generated_output
+        label: D1. Generated output
         type: longtext
-        description: What aspects are fixed, restricted, or difficult to configure?
+        description: What does the approach produce?
+        placeholder: e.g. Event log with start/end timestamps and resources; also a simulation model
 
-      - name: C4_notes
-        label: C4. Notes
-        type: longtext
-        height: 68
-        description: Additional information about configurability.
-
-  - title: D. Generated synthetic event log
-    fields:
-      - name: D1_log_attributes
-        label: D1. Generated event-log attributes
+      - name: log_attributes
+        label: D2. Generated event-log attributes
         type: multiselect
         options:
           - Case ID
@@ -215,23 +178,67 @@ sections:
           Attributes present in the generated output (not merely in the input or the simulation model).
           Start and end timestamps may both be selected.
 
-      - name: D2_output_format
-        label: D2. Output format
+      - name: output_format
+        label: D3. Output format
         type: multiselect
         options: [XES, CSV, JSON, Database, Tool-specific format, Other (specify)]
         specify: Other (specify) / tool-specific format
         description: In which format(s) is the generated log written?
 
-      - name: D3_notes
-        label: D3. Notes
+      - name: output_notes
+        label: D4. Notes
         type: longtext
         height: 68
         description: Additional information about generated event logs, output structure, or format.
 
-  - title: E. Evaluation
+  - title: E. Configurability
     fields:
-      - name: E1_evaluation_strategy
-        label: E1. Evaluation strategy
+      - name: configurable_aspects
+        label: E1. Configurable aspects
+        type: multiselect
+        options:
+          - Process model / control flow
+          - Number of cases / log size
+          - Trace length
+          - Arrival patterns
+          - Activity durations
+          - Resource availability / allocation
+          - Data attributes
+          - Routing probabilities
+          - Noise level
+          - Random seed
+          - Other (specify)
+        specify: Other (specify)
+        description: Which aspects can users explicitly configure?
+
+      - name: configuration_mechanism
+        label: E2. Configuration mechanism
+        type: multiselect
+        options:
+          - Graphical user interface
+          - Configuration file
+          - API / programming interface
+          - Model annotations
+          - Prompts / natural language
+          - Other (specify)
+        specify: Other (specify)
+        description: How does the user configure the generation?
+
+      - name: configuration_limitations
+        label: E3. Configuration limitations
+        type: longtext
+        description: What aspects are fixed, restricted, or difficult to configure?
+
+      - name: configuration_notes
+        label: E4. Notes
+        type: longtext
+        height: 68
+        description: Additional information about configurability.
+
+  - title: F. Evaluation
+    fields:
+      - name: evaluation_strategy
+        label: F1. Evaluation strategy
         type: multiselect
         options:
           - Case study
@@ -245,8 +252,8 @@ sections:
         specify: Other (specify)
         description: How is the approach evaluated? Choose "No evaluation" only on its own.
 
-      - name: E2_evaluation_objectives
-        label: E2. Evaluation objectives
+      - name: evaluation_objectives
+        label: F2. Evaluation objectives
         type: multiselect
         options:
           - Realism / similarity
@@ -258,53 +265,53 @@ sections:
         specify: Other (specify)
         description: What does the evaluation try to show?
 
-      - name: E3_evaluation_metrics
-        label: E3. Evaluation metrics
+      - name: evaluation_metrics
+        label: F3. Evaluation metrics
         type: longtext
         description: List the metrics used to evaluate the generated data or approach.
         placeholder: e.g. Control-flow similarity, activity-duration distance, resource-distribution similarity, predictive accuracy, generation time
 
-      - name: E4_evaluation_datasets
-        label: E4. Evaluation datasets
+      - name: evaluation_datasets
+        label: F4. Evaluation datasets
         type: longtext
         description: Specify the datasets, process models, or case studies used for evaluation.
         placeholder: e.g. BPI Challenge event logs, synthetic benchmarks, healthcare workflows
 
-      - name: E5_evaluation_results
-        label: E5. Evaluation results
+      - name: evaluation_results
+        label: F5. Evaluation results
         type: longtext
         height: 120
         description: Summarize the main evaluation findings, including relevant quantitative results where available.
 
-      - name: E6_notes
-        label: E6. Notes
+      - name: evaluation_notes
+        label: F6. Notes
         type: longtext
         height: 68
         description: Additional information about the evaluation design, baselines, results, or validity.
 
-  - title: F. Limitations
+  - title: G. Limitations
     fields:
-      - name: F1_author_limitations
-        label: F1. Author-reported limitations
+      - name: author_limitations
+        label: G1. Author-reported limitations
         type: longtext
         description: Limitations explicitly acknowledged by the authors.
 
-      - name: F2_reviewer_limitations
-        label: F2. Reviewer-identified limitations
+      - name: reviewer_limitations
+        label: G2. Reviewer-identified limitations
         type: longtext
         description: >-
           Limitations identified during coding but not explicitly discussed by the authors.
           Distinguish interpretation from reported evidence.
 
-  - title: G. Additional notes
+  - title: H. Additional notes
     fields:
-      - name: G1_general_notes
-        label: G1. General notes
+      - name: general_notes
+        label: H1. General notes
         type: longtext
         description: Additional observations, ambiguities, implementation details, or information not covered by the predefined fields.
 
-      - name: G2_evidence_references
-        label: G2. Evidence and references
+      - name: evidence_references
+        label: H2. Evidence and references
         type: longtext
         description: Supporting page numbers, sections, figures, tables, or relevant quotations for key coding decisions.
-        placeholder: e.g. B3 → Sec. 4.2, Fig. 3 (p. 7); D1 → Table 2 (p. 9)
+        placeholder: e.g. C1 → Sec. 4.2, Fig. 3 (p. 7); D2 → Table 2 (p. 9)

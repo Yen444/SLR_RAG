@@ -189,33 +189,49 @@ def render_paper_list(pids: list[str], slot: int):
 with st.sidebar:
     st.markdown("#### 📚 SLR RAG")
 
-    # Status counts double as the list filter. Status only changes when set by hand in the decision box.
+    # The list stays hidden until a status, decision or database is picked (or a search typed).
+    # Status counts are for the chosen databases. Status only changes when set by hand in the decision box.
+    folders = sorted({p.folder for p in papers}, key=str.lower)
+    folder_filter = [f for f in ss.get("folder_filter", []) if f in folders]
+    in_folders = [p for p in papers if not folder_filter or p.folder in folder_filter]
     excluded = {p.paper_id for p in papers if decision_of(p.paper_id) == review.exclude_decision}
-    active = [p.paper_id for p in papers if p.paper_id not in excluded]
+    active = [p.paper_id for p in in_folders if p.paper_id not in excluded]
     counts = {s: sum(status_of(pid) == s for pid in active) for s in review.statuses[1:]}
+    n_excluded = sum(p.paper_id in excluded for p in in_folders)
     names = ({ALL: f"All · {len(active)}"} | {s: f"{nice(s)} · {n}" for s, n in counts.items()}
-             | {EXCLUDED: f"Excluded · {len(excluded)}"})
-    view = st.segmented_control("Show", list(names), format_func=names.get, default=ALL, key="status_view",
-                                label_visibility="collapsed") or ALL
-    c1, c2 = st.columns([5, 1], gap="small")
-    query = c1.text_input("Search", key="list_query", placeholder="🔎 Search title, file or folder",
+             | {EXCLUDED: f"Excluded · {n_excluded}"})
+    view = st.segmented_control("Show", list(names), format_func=names.get, key="status_view",
+                                label_visibility="collapsed")
+    c1, c2 = st.columns(2, gap="small") if len(folders) > 1 else (st.container(), None)
+    decision_filter = c1.multiselect("Decision", review.decisions, key="decision_filter", placeholder="Decision",
+                                     label_visibility="collapsed")
+    if c2:
+        c2.multiselect("Database", folders, key="folder_filter", placeholder="Database / folder",
+                       format_func=lambda f: f or "(top level)", label_visibility="collapsed")
+    query = st.text_input("Search", key="list_query", placeholder="🔎 Search title, file or folder",
                           label_visibility="collapsed").strip().lower()
-    with c2.popover("", icon=":material/filter_list:", help="Filter by decision"):
-        decision_filter = st.multiselect("Decision", review.decisions, key="decision_filter")
+
+    def shown(pid: str) -> bool:
+        if view == EXCLUDED:
+            return pid in excluded
+        if view not in (None, ALL) and status_of(pid) != view:
+            return False
+        # excluded papers only show under "Excluded" or when that decision is filtered for
+        return decision_of(pid) in decision_filter if decision_filter else pid not in excluded
 
     # `ordered` (the list's order: folder, then file name) is also what ◀ ▶ step through.
     ordered = [
         p.paper_id
-        for p in sorted(papers, key=lambda p: (p.folder != "", p.folder.lower(), p.filename.lower()))
-        if (p.paper_id in excluded if view == EXCLUDED else p.paper_id not in excluded)
-        and (view in (ALL, EXCLUDED) or status_of(p.paper_id) == view)
-        and (not decision_filter or decision_of(p.paper_id) in decision_filter)
-        and (not query or query in p.title.lower() or query in p.filename.lower())
+        for p in sorted(in_folders, key=lambda p: (p.folder != "", p.folder.lower(), p.filename.lower()))
+        if shown(p.paper_id) and (not query or query in p.title.lower() or query in p.filename.lower())
     ]
     # The compare controls are drawn below the list, but the list needs their value now.
     ss.setdefault("open_side", "left")
     target = 2 if ss.compare and ss.open_side == "right" else 1
-    render_paper_list(ordered, target)
+    if view or decision_filter or folder_filter or query:
+        render_paper_list(ordered, target)
+    else:
+        st.caption("Click a status, or pick a decision or database, to list the papers.")
 
     st.toggle("Compare two papers", key="compare")
     if ss.compare:
@@ -260,7 +276,7 @@ with st.sidebar:
             st.caption("Put these PDFs next to their CSV and click **Rescan papers folder**.")
             for row in scope.missing:
                 where = f"📁 {row[screening.FOLDER]} · " if row.get(screening.FOLDER) else ""
-                st.caption(f"{where}{row.get(screening.ID) or '?'} · {row.get(screening.PDF) or row.get('title', '')}")
+                st.caption(f"{where}{row[screening.ID] or '?'} · {row[screening.TITLE] or row[screening.PDF]}")
     if scope and scope.hidden:
         st.caption(f"{len(scope.hidden)} PDF(s) in `{settings.papers_dir.name}/` are not in a CSV and are hidden.")
 
@@ -321,8 +337,8 @@ def render_header(slot: int, pid: str):
                 doi = screening.doi_url(row)
                 parts = [row.get(screening.ID, ""), screening.citation(row), f"[DOI]({doi})" if doi else ""]
                 st.caption(" · ".join(x for x in parts if x) + f" · Paper {position}")
-                if row.get("note"):
-                    st.caption(f"📝 Screening note: {row['note']}")
+                if row.get(screening.NOTE):
+                    st.caption(f"📝 Screening note: {row[screening.NOTE]}")
             else:
                 st.caption(f"Paper {position} · {where}{paper.filename.split('/')[-1]}")
         c3.button("▶", key=f"next_{slot}", on_click=_step, args=(slot, ordered, 1), help="Next paper",
@@ -409,7 +425,7 @@ def render_extraction(slot: int, pid: str, ann: dict):
         values = {}
         for title, fields in sections.items():
             filled = sum(current(f.name) not in (None, "", []) for f in fields)
-            box = st.expander(f"**{title}** · {filled}/{len(fields)}", expanded=True) if title else st.container()
+            box = st.expander(f"**{title}** · {filled}/{len(fields)}", expanded=False) if title else st.container()
             with box:
                 row = []  # short fields go two per row; long text, multi-select and "specify" get a full row
                 for f in fields:

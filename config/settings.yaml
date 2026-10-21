@@ -53,3 +53,15 @@ similar_top_k: 10
 
 # Very long papers are cut to this many characters before being sent to the chat model
 max_context_chars: 400000
+
+# Screening CSVs: which column holds what. Databases name their columns differently; for each item, the
+# first column name that exists in a CSV is used (ignoring case, spaces and underscores). Defaults:
+#   item_id: [item_id]                pdf_filename: [pdf_filename]
+#   title:   [title, Document Title, Item Title]
+#   abstract: [abstract]              authors: [author, authors]
+#   year:    [year, Publication Year]
+#   venue:   [journal, booktitle, Publication Title, Source]
+#   doi:     [doi, Item DOI]          note: [note]          final_decision: [final_decision]
+# Add a list here only to change one, e.g. for a new database:
+# csv_columns:
+#   title: [title, Document Title, Item Title, Article Title]

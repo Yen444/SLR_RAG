@@ -2,7 +2,7 @@
 
 A local tool for working through a collection of research papers (e.g. for a systematic literature review).
 
-- **Browse** papers in the sidebar list (search, folder headings). The buttons above it show the counts (All / In progress / Done / Excluded) and filter the list. Click a row to open a paper, or use ◀ ▶.
+- **Browse** papers in the sidebar. The buttons show the counts (All / In progress / Done / Excluded). Click one, or pick a decision or database folder, or type a search, to list the matching papers (click the button again to hide the list). Click a row to open a paper, or use ◀ ▶.
 - **View** one paper, or two side by side (compare mode), in the PDF.js viewer: scroll, page box, zoom, thumbnails and Ctrl+F search. It's downloaded once into `static/` on first start.
 - **Extract** information into fields you define in `config/review.yaml`. **Fill with AI** pre-fills every field with a supporting quote and page number; you review, edit and save.
 - **Chat** about the open paper. The full paper text is sent to the model, so answers cite pages. You can also ask *"which papers in my collection are related?"* and the chat searches your collection.
@@ -86,7 +86,7 @@ Then:
 
 - Only PDFs that belong to a CSV row are shown, grouped by database folder. A PDF is linked to a row of the CSV in its own folder (or a folder above it) by the `pdf_filename` column, or else by `item_id` (`<item_id>.pdf`, `<item_id>_included.pdf`). Other PDFs are hidden.
 - Linking related papers and *Similar to this paper* / *Search* work across all databases. Linked papers and search results show their database folder.
-- Titles, abstracts (for *Similar to this paper*), authors, year, journal and DOI come from the CSV. Your screening `note` is shown under the title.
+- Titles, abstracts (for *Similar to this paper*), authors, year, journal and DOI come from the CSV. Each database names these columns differently (`title`, `Title`, `Document Title`, `Item Title`, …); `csv_columns` in `config/settings.yaml` lists the names that are recognised and can be extended. Your screening `note` is shown under the title.
 - CSV rows without a PDF are listed in the sidebar (⚠️), so nothing is forgotten.
 - Every paper starts as **include**. Excluding one in the app moves it under the **Excluded** button, where you can undo it.
 - **Export CSV** writes one new file for all databases: all your original rows and columns, plus `source_csv` / `source_folder`, `final_decision_updated`, the review columns (`review_status`, `review_decision`, `review_exclusion_reason`, …) and one column per extraction field. The original CSVs and the PDFs are never changed.
