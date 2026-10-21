@@ -1,5 +1,7 @@
 # Paths are relative to the project root.
-papers_dir: ./papers          # put your PDFs here (subfolders are scanned too)
+papers_dir: ./papers          # PDFs, e.g. one subfolder per database: papers/science_direct/*.pdf
+                              # A screening CSV in a folder (papers/science_direct/results.csv, included
+                              # papers only) limits the app to the PDFs listed in it. See README.
 data_dir: ./data              # text cache, vector index, annotations (JSON)
 
 # Which models to use: a name from the lists below.

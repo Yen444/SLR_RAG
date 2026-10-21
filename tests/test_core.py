@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from slr_rag import store
 from slr_rag.catalog import scan_papers
 from slr_rag.config import ReviewConfig, load_review, load_settings
-from slr_rag.extraction import build_model
+from slr_rag.extraction import _normalize, build_model, field_guide
 from slr_rag.pdf_text import full_text, get_pages
 
 from .conftest import make_pdf
@@ -26,6 +26,22 @@ def test_select_without_options_is_rejected():
 def test_unknown_field_type_is_rejected():
     with pytest.raises(ValidationError):
         ReviewConfig(statuses=["a"], decisions=["b"], fields=[{"name": "x", "type": "date"}])
+
+
+def test_sections_and_specify_boxes():
+    review = ReviewConfig(statuses=["a"], decisions=["b"], sections=[
+        {"title": "A. One", "fields": [{"name": "x", "type": "select", "options": ["p", "Other"], "specify": "Other"}]},
+        {"title": "B. Two", "fields": [{"name": "y", "type": "longtext", "height": 300}]},
+    ])
+    assert [(f.name, f.section) for f in review.fields] == [("x", "A. One"), ("y", "B. Two")]
+    assert review.fields[0].specify_name == "x_specify"
+    assert set(build_model(review).model_json_schema()["$defs"]["Answer_x"]["properties"]) == {
+        "value", "specify", "evidence", "page"}
+    assert store.field_columns({"x": "Other", "x_specify": "mine", "y": None}, review) == {
+        "x": "Other", "x_specify": "mine", "y": None}
+    with pytest.raises(ValidationError, match="duplicate"):
+        ReviewConfig(statuses=["a"], decisions=["b"], fields=[
+            {"name": "x", "specify": "Other"}, {"name": "x_specify"}])
 
 
 def test_done_status_defaults_to_last(review):
@@ -113,5 +129,13 @@ def test_extraction_schema(review):
         "findings": {"value": "it works", "evidence": "results show", "page": 5},
     })
     assert parsed.model_dump()["design"]["value"] == "RCT"
-    with pytest.raises(ValidationError):
-        model.model_validate({**parsed.model_dump(), "design": {"value": "not an option", "evidence": None, "page": None}})
+    assert "enum" not in json.dumps(schema)  # options are in the prompt; Gemini rejects big enum schemas
+
+
+def test_extraction_prompt_and_option_normalizing(review):
+    guide = field_guide(review)
+    assert "- design (Design, select) Options (one): RCT | cohort." in guide
+    assert "Options (any number): survey | interview." in guide
+    methods = next(f for f in review.fields if f.name == "methods")
+    assert _normalize(methods, ["Survey ", "survey", "focus group"]) == ["survey", "focus group"]
+    assert _normalize(next(f for f in review.fields if f.name == "design"), "rct") == "RCT"

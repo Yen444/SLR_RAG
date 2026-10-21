@@ -20,6 +20,10 @@ class FieldDef(BaseModel):
     type: FieldType = "text"
     options: list[str] = []
     description: str = ""
+    placeholder: str = ""  # example text shown in an empty text box
+    height: int | None = None  # longtext only: box height in px
+    specify: str = ""  # label of an extra free-text box, saved as <name>_specify (e.g. "Other (specify)")
+    section: str = ""  # set from the `sections:` list
 
     @model_validator(mode="after")
     def _check(self):
@@ -29,6 +33,15 @@ class FieldDef(BaseModel):
             self.label = self.name.replace("_", " ").capitalize()
         return self
 
+    @property
+    def specify_name(self) -> str:
+        return f"{self.name}_specify"
+
+
+class Section(BaseModel):
+    title: str
+    fields: list[FieldDef] = []
+
 
 class ReviewConfig(BaseModel):
     statuses: list[str] = Field(min_length=1)
@@ -36,15 +49,19 @@ class ReviewConfig(BaseModel):
     decisions: list[str] = Field(min_length=1)
     exclude_decision: str = "exclude"
     exclusion_reasons: list[str] = []
+    ai_instructions: str = ""  # context for "Fill with AI", e.g. what the review is about
+    sections: list[Section] = []  # fields grouped under a heading; added to `fields` in order
     fields: list[FieldDef] = []
 
     @model_validator(mode="after")
     def _check(self):
+        self.fields = [*self.fields, *(f.model_copy(update={"section": s.title}) for s in self.sections for f in s.fields)]
+        self.sections = []
         if not self.done_status:
             self.done_status = self.statuses[-1]
         if self.done_status not in self.statuses:
             raise ValueError(f"done_status '{self.done_status}' is not in statuses")
-        names = [f.name for f in self.fields]
+        names = [f.name for f in self.fields] + [f.specify_name for f in self.fields if f.specify]
         duplicates = {n for n in names if names.count(n) > 1}
         if duplicates:
             raise ValueError(f"duplicate field names: {sorted(duplicates)}")

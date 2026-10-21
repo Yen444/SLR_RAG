@@ -4,7 +4,7 @@ import mimetypes
 
 import streamlit as st
 
-from slr_rag import chat, extraction, index, llm, store, viewer
+from slr_rag import chat, extraction, index, llm, screening, store, viewer
 from slr_rag.catalog import scan_papers
 from slr_rag.config import FieldDef, load_review, load_settings
 
@@ -16,20 +16,38 @@ ss = st.session_state
 # Panels are keyed containers (class "st-key-<key>"), styled here so PDF and review areas are clearly apart.
 st.html("""
 <style>
-.block-container { padding-top: 1.2rem; padding-bottom: 1rem; }
+/* Streamlit's top toolbar is fixed over the page; keep it slim and start content below it */
+[data-testid="stHeader"] { height: 2.5rem; }
+.block-container { padding-top: 3rem; padding-bottom: 1rem; }
 [class*="st-key-header_"] {
-  background: #fff; border: 1px solid #d5dbe3; border-radius: 12px; padding: 8px 14px; }
+  background: #fff; border: 1px solid #d5dbe3; border-radius: 12px; padding: 6px 12px; }
 [class*="st-key-pdfpanel_"] {
   background: #3c4043; border-radius: 12px; padding: 6px; }
 [class*="st-key-reviewpanel_"] {
-  background: #fff; border: 1px solid #d5dbe3; border-radius: 12px; padding: 14px 18px 18px;
+  background: #fff; border: 1px solid #d5dbe3; border-radius: 12px; padding: 8px 12px 12px;
   box-shadow: 0 1px 4px rgba(15, 23, 42, .06); }
 [class*="st-key-decisionbox_"] {
-  background: #f6f8fb; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; }
-.panel-title {
-  font-size: .75rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #64748b; }
-.st-key-paperlist button { justify-content: flex-start; text-align: left; padding: 1px 8px; min-height: 2rem; }
-.st-key-paperlist button p { font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  background: #f6f8fb; border: 1px solid #e2e8f0; border-radius: 10px; padding: 6px 10px 8px; }
+/* compact review panel: tighter gaps, smaller labels and inputs */
+[class*="st-key-reviewpanel_"] [data-testid="stVerticalBlock"] { gap: .45rem; }
+[class*="st-key-reviewpanel_"] [data-testid="stWidgetLabel"] { min-height: 0; margin-bottom: 0; }
+[class*="st-key-reviewpanel_"] [data-testid="stWidgetLabel"] p { font-size: .78rem; color: #475569; }
+[class*="st-key-reviewpanel_"] input, [class*="st-key-reviewpanel_"] textarea,
+[class*="st-key-reviewpanel_"] [data-baseweb="select"] { font-size: .85rem; }
+[class*="st-key-reviewpanel_"] [data-baseweb="select"] > div { min-height: 2.1rem; }
+[class*="st-key-reviewpanel_"] [data-baseweb="tab"] { height: 2.2rem; }
+/* compact sidebar */
+[data-testid="stSidebarUserContent"] { padding-top: 0; }
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: .5rem; }
+/* paper list: one full-width clickable row per paper */
+.st-key-paperlist [data-testid="stVerticalBlock"] { gap: 0; }
+.st-key-paperlist button { width: 100%; justify-content: flex-start; text-align: left;
+  padding: 3px 8px; min-height: 0; border-radius: 6px; }
+.st-key-paperlist button:hover { background: #eef2f7; }
+.st-key-paperlist button > div { justify-content: flex-start; min-width: 0; }
+.st-key-paperlist button p { font-size: .8rem; line-height: 1.3; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.st-key-paperlist [data-testid="stCaptionContainer"] { padding: 6px 8px 2px; }
 </style>
 """)
 
@@ -43,8 +61,14 @@ except Exception as e:
 
 
 @st.cache_data(show_spinner="Scanning papers…")
-def _scan(papers_dir: str, token: int):
-    return scan_papers(settings)
+def _scan(papers_dir: str, token: int, csv_stamp: tuple):
+    """PDFs to review, and the screening CSVs with the PDF <-> row links (None without CSVs)."""
+    papers = scan_papers(settings)
+    records = screening.load_records(settings)
+    if records.empty:
+        return papers, None, records
+    sc = screening.scope(papers, records)
+    return sc.papers, sc, records
 
 
 @st.cache_resource(show_spinner="Downloading the PDF viewer (one time)…")
@@ -59,7 +83,8 @@ def _pdfjs_ready() -> str | None:
 ss.setdefault("scan_token", 0)
 ss.setdefault("compare", False)
 ss.setdefault("goto_counter", 0)
-papers = _scan(str(settings.papers_dir), ss.scan_token)
+csv_stamp = tuple((f.name, f.stat().st_mtime_ns) for f in screening.csv_files(settings))
+papers, scope, records = _scan(str(settings.papers_dir), ss.scan_token, csv_stamp)
 by_id = {p.paper_id: p for p in papers}
 saved = store.load_all(settings)
 
@@ -69,17 +94,31 @@ def ann_of(pid: str) -> dict:
     return store.get(by_id[pid], settings, review)
 
 
-def status_icon(pid: str) -> str:
-    status = saved.get(pid, {}).get("status", review.statuses[0])
-    return "✅" if status == review.done_status else ("⚪" if status == review.statuses[0] else "🟡")
+ALL = "__all__"  # "All" button of the status filter: every paper that isn't excluded
+EXCLUDED = "__excluded__"  # "Excluded" button: papers excluded in this app
 
 
-def label(pid: str, max_len: int = 100) -> str:
-    decision = saved.get(pid, {}).get("decision", review.decisions[0])
-    tag = "" if decision == review.decisions[0] else f" · {decision}"
-    title = by_id[pid].title
-    title = title if len(title) <= max_len else title[: max_len - 1] + "…"
-    return f"{status_icon(pid)} {title}{tag}"
+def csv_row(pid: str) -> dict:
+    """The paper's row in the screening CSVs ({} without CSVs)."""
+    return records.loc[scope.rows[pid]].to_dict() if scope and pid in scope.rows else {}
+
+
+def status_of(pid: str) -> str:
+    return saved.get(pid, {}).get("status", review.statuses[0])
+
+
+def decision_of(pid: str) -> str:
+    return saved.get(pid, {}).get("decision", review.decisions[0])
+
+
+def nice(name: str) -> str:
+    return name.replace("_", " ").capitalize()
+
+
+def label(pid: str, with_folder: bool = False) -> str:
+    tag = "" if decision_of(pid) == review.decisions[0] else f" · {decision_of(pid)}"
+    folder = f"📁 {by_id[pid].folder} · " if with_folder and by_id[pid].folder else ""
+    return f"{folder}{by_id[pid].title}{tag}"
 
 
 def with_current(options: list, current) -> list:
@@ -128,13 +167,59 @@ def _goto(pid: str, page: int | None, quote: str | None = None):
     ss[f"goto_{pid}"] = {"page": page, "search": phrase, "nonce": ss.goto_counter}
 
 
+def render_paper_list(pids: list[str], slot: int):
+    """One full-width row per paper in a scroll box; clicking anywhere on a row opens the paper."""
+    if not pids:
+        st.caption("No papers match.")
+        return
+    open_ids = {ss.get("slot1"), ss.get("slot2") if ss.compare else None}
+    show_folders = any(by_id[p].folder for p in pids)
+    folder = None
+    with st.container(key="paperlist", height=520 if len(pids) > 14 else "content", border=True):
+        for n, pid in enumerate(pids, 1):
+            if show_folders and by_id[pid].folder != folder:
+                folder = by_id[pid].folder
+                st.caption(f"📁 {folder or '(top level)'}")
+            st.button(f"{n}. {label(pid)}", key=f"list_{pid}", type="primary" if pid in open_ids else "tertiary",
+                      width="stretch", on_click=_open, args=(slot, pid))
+
+
 # ---------- sidebar ----------
 
 with st.sidebar:
-    st.title("📚 SLR RAG")
-    if papers:
-        done = sum(saved.get(p.paper_id, {}).get("status") == review.done_status for p in papers)
-        st.progress(done / len(papers), text=f"{done} / {len(papers)} {review.done_status}")
+    st.markdown("#### 📚 SLR RAG")
+
+    # Status counts double as the list filter. Status only changes when set by hand in the decision box.
+    excluded = {p.paper_id for p in papers if decision_of(p.paper_id) == review.exclude_decision}
+    active = [p.paper_id for p in papers if p.paper_id not in excluded]
+    counts = {s: sum(status_of(pid) == s for pid in active) for s in review.statuses[1:]}
+    names = ({ALL: f"All · {len(active)}"} | {s: f"{nice(s)} · {n}" for s, n in counts.items()}
+             | {EXCLUDED: f"Excluded · {len(excluded)}"})
+    view = st.segmented_control("Show", list(names), format_func=names.get, default=ALL, key="status_view",
+                                label_visibility="collapsed") or ALL
+    c1, c2 = st.columns([5, 1], gap="small")
+    query = c1.text_input("Search", key="list_query", placeholder="🔎 Search title, file or folder",
+                          label_visibility="collapsed").strip().lower()
+    with c2.popover("", icon=":material/filter_list:", help="Filter by decision"):
+        decision_filter = st.multiselect("Decision", review.decisions, key="decision_filter")
+
+    # `ordered` (the list's order: folder, then file name) is also what ◀ ▶ step through.
+    ordered = [
+        p.paper_id
+        for p in sorted(papers, key=lambda p: (p.folder != "", p.folder.lower(), p.filename.lower()))
+        if (p.paper_id in excluded if view == EXCLUDED else p.paper_id not in excluded)
+        and (view in (ALL, EXCLUDED) or status_of(p.paper_id) == view)
+        and (not decision_filter or decision_of(p.paper_id) in decision_filter)
+        and (not query or query in p.title.lower() or query in p.filename.lower())
+    ]
+    # The compare controls are drawn below the list, but the list needs their value now.
+    ss.setdefault("open_side", "left")
+    target = 2 if ss.compare and ss.open_side == "right" else 1
+    render_paper_list(ordered, target)
+
+    st.toggle("Compare two papers", key="compare")
+    if ss.compare:
+        st.radio("Clicking a paper opens it", ["left", "right"], horizontal=True, key="open_side")
 
     with st.expander("⚙️ Models & tools"):
         model_names = list(settings.chat_models)
@@ -161,63 +246,35 @@ with st.sidebar:
             except Exception as e:
                 bar.empty()
                 st.error(f"Indexing failed: {e}")
-        if papers:
+        if scope:
+            table = screening.export(records, scope, papers, settings, review)
+            st.download_button("⬇️ Export CSV", table.to_csv(index=False).encode("utf-8-sig"),
+                               "slr_extraction_export.csv", "text/csv", width="stretch",
+                               help="All rows of your screening CSVs plus the review and extraction columns")
+        elif papers:
             csv = store.export_table(papers, settings, review).to_csv(index=False).encode("utf-8-sig")
             st.download_button("⬇️ Export CSV", csv, "slr_export.csv", "text/csv", width="stretch")
+
+    if scope and scope.missing:
+        with st.expander(f"⚠️ {len(scope.missing)} CSV row(s) without a PDF"):
+            st.caption("Put these PDFs next to their CSV and click **Rescan papers folder**.")
+            for row in scope.missing:
+                where = f"📁 {row[screening.FOLDER]} · " if row.get(screening.FOLDER) else ""
+                st.caption(f"{where}{row.get(screening.ID) or '?'} · {row.get(screening.PDF) or row.get('title', '')}")
+    if scope and scope.hidden:
+        st.caption(f"{len(scope.hidden)} PDF(s) in `{settings.papers_dir.name}/` are not in a CSV and are hidden.")
 
     missing = {llm.missing_key(s.provider) for s in (settings.chat_models[ss.chat_model_name], emb_spec)} - {None}
     for env in sorted(missing):
         st.warning(f"`{env}` is not set. Add it to `.env` to use AI features.")
 
-    with st.expander("🔎 Filter"):
-        status_filter = st.multiselect("Status", review.statuses)
-        decision_filter = st.multiselect("Decision", review.decisions)
-        query = st.text_input("Title contains").strip().lower()
-
-    filtered = [
-        p.paper_id
-        for p in papers
-        if (not status_filter or saved.get(p.paper_id, {}).get("status", review.statuses[0]) in status_filter)
-        and (not decision_filter or saved.get(p.paper_id, {}).get("decision", review.decisions[0]) in decision_filter)
-        and (not query or query in p.title.lower() or query in p.filename.lower())
-    ]
-
-    st.toggle("Compare two papers", key="compare")
-    target = 1
-    if ss.compare:
-        side = st.radio("Clicking a paper opens it", ["left", "right"], horizontal=True, key="open_side")
-        target = 1 if side == "left" else 2
-
-    # Paper list, grouped by sub-folder. `ordered` (the display order) is also what ◀ ▶ step through.
-    groups: dict[str, list[str]] = {}
-    for pid in filtered:
-        groups.setdefault(by_id[pid].folder, []).append(pid)
-    folders = sorted(groups, key=lambda f: (f != "", f.lower()))
-    ordered = [pid for f in folders for pid in groups[f]]
-
-    shown = f"{len(filtered)} of {len(papers)}" if len(filtered) != len(papers) else str(len(papers))
-    st.markdown(f"**Papers** ({shown})")
-    st.caption(f"✅ {review.done_status} · 🟡 in progress · ⚪ {review.statuses[0]}")
-    open_ids = {ss.get("slot1"), ss.get("slot2") if ss.compare else None}
-
-    def list_button(pid: str):
-        st.button(label(pid, 60), key=f"list_{pid}", type="primary" if pid in open_ids else "tertiary",
-                  width="stretch", on_click=_open, args=(target, pid), help=by_id[pid].filename)
-
-    with st.container(key="paperlist"):
-        if folders == [""]:
-            for pid in ordered:
-                list_button(pid)
-        for folder in folders if folders != [""] else []:
-            pids = groups[folder]
-            n_done = sum(saved.get(p, {}).get("status") == review.done_status for p in pids)
-            with st.expander(f"📁 {folder or '(top level)'} · {n_done}/{len(pids)}",
-                             expanded=any(p in open_ids for p in pids)):
-                for pid in pids:
-                    list_button(pid)
 
 if not papers:
-    st.info(f"No PDFs found. Put your papers in `{settings.papers_dir}` and click **Rescan papers folder**.")
+    if scope:
+        st.info(f"None of the PDFs in `{settings.papers_dir}` is listed in its folder's CSV file. "
+                "PDFs are matched by the `pdf_filename` column or by `item_id`.")
+    else:
+        st.info(f"No PDFs found. Put your papers in `{settings.papers_dir}` and click **Rescan papers folder**.")
     st.stop()
 
 
@@ -226,9 +283,10 @@ if not papers:
 def field_widget(f: FieldDef, current, key: str):
     kw = {"key": key, "help": f.description or None}
     if f.type == "text":
-        return st.text_input(f.label, value=current or "", **kw).strip() or None
+        return st.text_input(f.label, value=current or "", placeholder=f.placeholder or None, **kw).strip() or None
     if f.type == "longtext":
-        return st.text_area(f.label, value=current or "", height=110, **kw).strip() or None
+        return st.text_area(f.label, value=current or "", height=f.height or 80, placeholder=f.placeholder or None,
+                            **kw).strip() or None
     if f.type == "number":
         value = float(current) if isinstance(current, (int, float)) and not isinstance(current, bool) else None
         return st.number_input(f.label, value=value, **kw)
@@ -258,7 +316,15 @@ def render_header(slot: int, pid: str):
                   disabled=not ordered)
         with c2:
             st.markdown(f"**{paper.title}**")
-            st.caption(f"Paper {position} · {where}{paper.filename.split('/')[-1]}")
+            row = csv_row(pid)
+            if row:
+                doi = screening.doi_url(row)
+                parts = [row.get(screening.ID, ""), screening.citation(row), f"[DOI]({doi})" if doi else ""]
+                st.caption(" · ".join(x for x in parts if x) + f" · Paper {position}")
+                if row.get("note"):
+                    st.caption(f"📝 Screening note: {row['note']}")
+            else:
+                st.caption(f"Paper {position} · {where}{paper.filename.split('/')[-1]}")
         c3.button("▶", key=f"next_{slot}", on_click=_step, args=(slot, ordered, 1), help="Next paper",
                   disabled=not ordered)
 
@@ -290,11 +356,12 @@ def render_decision(slot: int, pid: str, ann: dict):
                      format_func=lambda x: "— choose —" if x is None else x, key=f"reason_{slot}_{pid}",
                      disabled=not excluding, on_change=_save_attr, args=(pid, "exclusion_reason", f"reason_{slot}_{pid}"),
                      help=None if excluding else f"Set the decision to '{review.exclude_decision}' to choose a reason")
-        st.text_input("Reason (optional)", value=ann.get("reason_text", ""), key=f"rtext_{slot}_{pid}",
-                      placeholder="Your own reason, e.g. if none in the list fits",
+        c1, c2 = st.columns([1, 2])
+        c1.text_input("Reason (optional)", value=ann.get("reason_text", ""), key=f"rtext_{slot}_{pid}",
+                      placeholder="Your own reason",
                       on_change=_save_attr, args=(pid, "reason_text", f"rtext_{slot}_{pid}"))
-        st.text_area("Reason note (optional)", value=ann.get("reason_note", ""), key=f"rnote_{slot}_{pid}",
-                     height=75, placeholder="Details about the decision",
+        c2.text_input("Reason note (optional)", value=ann.get("reason_note", ""), key=f"rnote_{slot}_{pid}",
+                     placeholder="Details about the decision",
                      on_change=_save_attr, args=(pid, "reason_note", f"rnote_{slot}_{pid}"))
 
 
@@ -305,7 +372,11 @@ def render_extraction(slot: int, pid: str, ann: dict):
     paper = by_id[pid]
     draft_key, ver_key = f"draft_{pid}", f"ver_{pid}"
 
-    if st.button("✨ Fill with AI", key=f"ai_{slot}_{pid}", type="primary",
+    draft = ss.get(draft_key, {})
+    c1, c2 = st.columns([1, 2], vertical_alignment="center")
+    if draft:
+        c2.caption("AI values are filled in below. Check them, then click **Save**.")
+    if c1.button("✨ Fill with AI", key=f"ai_{slot}_{pid}", type="primary", width="stretch",
                  help="Read the paper and pre-fill every field. Nothing is saved until you click Save."):
         with st.spinner("Reading the paper and extracting fields…"):
             try:
@@ -318,25 +389,45 @@ def render_extraction(slot: int, pid: str, ann: dict):
             a["ai_suggestions"] = result
             a["ai_model"] = ss.chat_model_name
             store.save(a, settings)
-            ss[draft_key] = {name: r["value"] for name, r in result.items() if r and r.get("value") not in (None, [])}
+            draft = {name: r["value"] for name, r in result.items() if r and r.get("value") not in (None, [])}
+            draft |= {f"{name}_specify": r["specify"] for name, r in result.items() if r and r.get("specify")}
+            ss[draft_key] = draft
             ss[ver_key] = ss.get(ver_key, 0) + 1  # new widget keys, so widgets pick up the AI values
             st.rerun()
 
-    draft = ss.get(draft_key, {})
     suggestions = ann.get("ai_suggestions") or {}
-    if draft:
-        st.info("AI values are filled in. Review them, then click **Save** (nothing is saved yet).")
 
     ver = ss.get(ver_key, 0)
+    def current(name: str):
+        return draft.get(name, ann["fields"].get(name))
+
+    sections: dict[str, list[FieldDef]] = {}
+    for f in review.fields:
+        sections.setdefault(f.section, []).append(f)
+
     with st.form(f"form_{slot}_{pid}_{ver}", border=False):
         values = {}
-        for f in review.fields:
-            current = draft.get(f.name, ann["fields"].get(f.name))
-            values[f.name] = field_widget(f, current, key=f"fld_{slot}_{pid}_{ver}_{f.name}")
-            s = suggestions.get(f.name) or {}
-            if s.get("evidence"):
-                page = f" (p. {s['page']})" if s.get("page") else ""
-                st.caption(f"🤖 AI: **{s.get('value')}** — “{s['evidence'][:250]}”{page}")
+        for title, fields in sections.items():
+            filled = sum(current(f.name) not in (None, "", []) for f in fields)
+            box = st.expander(f"**{title}** · {filled}/{len(fields)}", expanded=True) if title else st.container()
+            with box:
+                row = []  # short fields go two per row; long text, multi-select and "specify" get a full row
+                for f in fields:
+                    key = f"fld_{slot}_{pid}_{ver}_{f.name}"
+                    if f.specify:
+                        c_main, c_spec = st.columns([3, 2], vertical_alignment="bottom")
+                        with c_main:
+                            values[f.name] = field_widget(f, current(f.name), key=key)
+                        values[f.specify_name] = c_spec.text_input(
+                            f.specify, value=current(f.specify_name) or "", key=f"{key}_specify").strip() or None
+                        continue
+                    if f.type in ("longtext", "multiselect"):
+                        box = st.container()
+                    else:
+                        row = row or list(st.columns(2))
+                        box = row.pop(0)
+                    with box:
+                        values[f.name] = field_widget(f, current(f.name), key=key)
         c1, c2 = st.columns(2)
         save_clicked = c1.form_submit_button("💾 Save", type="primary", width="stretch")
         discard_clicked = c2.form_submit_button("Discard unsaved", width="stretch")
@@ -360,7 +451,7 @@ def render_extraction(slot: int, pid: str, ann: dict):
             for f, s in evidence:
                 st.button(f"p. {s['page']} · {f.label}", key=f"goto_{slot}_{pid}_{f.name}",
                           on_click=_goto, args=(pid, s["page"], s.get("evidence")),
-                          help="Jump to the page and highlight the quote")
+                          help=f"“{s.get('evidence') or ''}” (click to jump there and highlight it)")
 
 
 def render_chat(slot: int, pid: str, ann: dict, height: int):
@@ -409,7 +500,7 @@ def render_related(slot: int, pid: str, ann: dict):
             st.caption(f"{lid} (PDF no longer in folder)")
             continue
         c1, c2, c3 = st.columns([6, 1.5, 1.5])
-        c1.write(label(lid))
+        c1.write(label(lid, with_folder=True))
         c2.button("Open", key=f"openl_{slot}_{pid}_{lid}", on_click=_open, args=(other, lid),
                   help="Open side by side")
         c3.button("Unlink", key=f"unlink_{slot}_{pid}_{lid}", on_click=_unlink, args=(pid, lid))
@@ -435,7 +526,7 @@ def render_related(slot: int, pid: str, ann: dict):
             continue
         with st.container(border=True):
             where = f"p. {r['page']}" if r.get("page") else "abstract"
-            st.markdown(f"**{rank}.** {label(rid)}  \n<small>similarity {r['score']:.2f} · {where}</small>",
+            st.markdown(f"**{rank}.** {label(rid, with_folder=True)}  \n<small>similarity {r['score']:.2f} · {where}</small>",
                         unsafe_allow_html=True)
             st.caption(r["snippet"][:300] + "…")
             c1, c2 = st.columns(2)
@@ -453,7 +544,6 @@ def render_related(slot: int, pid: str, ann: dict):
 def render_review(slot: int, pid: str, chat_height: int):
     ann = ann_of(pid)
     with st.container(key=f"reviewpanel_{slot}"):
-        st.html('<div class="panel-title">Review</div>')
         render_decision(slot, pid, ann)
         t1, t2, t3 = st.tabs(["📝 Extraction", "💬 Chat", "🔗 Related & notes"])
         with t1:

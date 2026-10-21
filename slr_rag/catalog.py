@@ -16,6 +16,7 @@ class Paper:
     filename: str  # path relative to papers_dir, with forward slashes
     path: Path
     title: str
+    abstract: str = ""  # from the screening CSV, if any
 
     @property
     def folder(self) -> str:

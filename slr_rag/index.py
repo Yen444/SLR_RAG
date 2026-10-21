@@ -68,7 +68,8 @@ def extract_abstract(pages: list[str]) -> str:
 
 def paper_text(paper: Paper, settings: Settings) -> str:
     """What the paper-level vector represents: title + abstract."""
-    return f"{paper.title}\n\n{extract_abstract(get_pages(paper, settings))}"
+    abstract = " ".join(paper.abstract.split())[:PAPER_TEXT_CHARS] or extract_abstract(get_pages(paper, settings))
+    return f"{paper.title}\n\n{abstract}"
 
 
 def index_papers(

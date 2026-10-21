@@ -1,7 +1,7 @@
 # secrets
 .env
 
-# papers and generated data (text cache, vector index, annotations)
+# papers + screening CSVs, and generated data (text cache, vector index, annotations)
 papers/
 data/
 

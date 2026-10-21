@@ -82,6 +82,17 @@ def load_all(settings: Settings) -> dict[str, dict]:
     return out
 
 
+def field_columns(fields: dict, review: ReviewConfig) -> dict:
+    """Export columns for the configured fields: lists joined with ';', plus <name>_specify boxes."""
+    out = {}
+    for f in review.fields:
+        value = fields.get(f.name)
+        out[f.name] = ";".join(value) if isinstance(value, list) else value
+        if f.specify:
+            out[f.specify_name] = fields.get(f.specify_name)
+    return out
+
+
 def export_table(papers: list[Paper], settings: Settings, review: ReviewConfig) -> pd.DataFrame:
     """One row per paper, one column per configured field."""
     saved = load_all(settings)
@@ -101,8 +112,5 @@ def export_table(papers: list[Paper], settings: Settings, review: ReviewConfig) 
             "notes": ann.get("notes", ""),
             "linked_papers": ";".join(ann.get("linked_papers", [])),
         }
-        for f in review.fields:
-            value = ann["fields"].get(f.name)
-            row[f.name] = ";".join(value) if isinstance(value, list) else value
-        rows.append(row)
+        rows.append(row | field_columns(ann["fields"], review))
     return pd.DataFrame(rows)

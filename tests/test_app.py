@@ -2,6 +2,7 @@
 
 import json
 
+import pandas as pd
 import pytest
 import yaml
 from streamlit.testing.v1 import AppTest
@@ -18,13 +19,16 @@ def _isolate_viewer(tmp_path, monkeypatch):
     monkeypatch.setattr(viewer, "PDF_DIR", tmp_path / "static_pdf")
 
 
-def _app(tmp_path, monkeypatch, files=("p0.pdf", "p1.pdf")):
+def _app(tmp_path, monkeypatch, files=("p0.pdf", "p1.pdf"), csvs=None):
+    """csvs: {"science_direct/results.csv": [row dicts]}, written inside the papers folder."""
     papers = tmp_path / "papers"
     for i, name in enumerate(files):
         (papers / name).parent.mkdir(parents=True, exist_ok=True)
         make_pdf(papers / name, [f"content of paper {i}", "second page"], title=f"Paper number {i} about things")
     papers.mkdir(exist_ok=True)
     settings_file = tmp_path / "settings.yaml"
+    for rel, rows in (csvs or {}).items():
+        pd.DataFrame(rows).to_csv(papers / rel, index=False, encoding="utf-8-sig")
     settings_file.write_text(yaml.safe_dump({"papers_dir": str(papers), "data_dir": str(tmp_path / "data"), **MODELS}))
     monkeypatch.setenv("SLR_SETTINGS", str(settings_file))
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=30)
@@ -53,44 +57,73 @@ def test_decision_reason_fields_save(tmp_path, monkeypatch):
     reason = next(s for s in at.selectbox if s.label == "Exclusion reason")
     assert reason.disabled  # only for the exclude decision
     next(s for s in at.selectbox if s.label == "Decision").set_value("exclude").run()
-    next(s for s in at.selectbox if s.label == "Exclusion reason").set_value("duplicate").run()
+    next(s for s in at.selectbox if s.label == "Exclusion reason").set_value("other").run()
     next(t for t in at.text_input if t.label == "Reason (optional)").set_value("same data as another paper").run()
-    next(t for t in at.text_area if t.label == "Reason note (optional)").set_value("see paper 2").run()
+    next(t for t in at.text_input if t.label == "Reason note (optional)").set_value("see paper 2").run()
     assert not at.exception
     (ann,) = _annotations(tmp_path)
-    assert ann["decision"] == "exclude" and ann["exclusion_reason"] == "duplicate"
+    assert ann["decision"] == "exclude" and ann["exclusion_reason"] == "other"
     assert ann["reason_text"] == "same data as another paper" and ann["reason_note"] == "see paper 2"
 
 
 def test_extraction_form_saves(tmp_path, monkeypatch):
     at = _app(tmp_path, monkeypatch)
-    next(s for s in at.selectbox if s.label == "Study design").set_value("RCT")
-    next(t for t in at.text_area if t.label == "Key findings").set_value("It works.")
+    labels = [e.label for e in at.expander]
+    assert any(l.startswith("**A. General information** · 0/5") for l in labels)
+    assert any(l.startswith("**G. Additional notes**") for l in labels)
+    next(s for s in at.selectbox if s.label == "A1. Application domain").set_value("Domain-specific")
+    next(t for t in at.text_input if t.label == "Domain (if domain-specific)").set_value("healthcare")
+    next(m for m in at.multiselect if m.label == "A3. Target application").set_value(["Process discovery"])
+    next(t for t in at.text_area if t.label == "B3. Core mechanism").set_value("Discrete-event simulation.")
     next(b for b in at.button if b.label == "💾 Save").click().run()
     assert not at.exception
     fields = _annotations(tmp_path)[0]["fields"]
-    assert fields["study_design"] == "RCT" and fields["key_findings"] == "It works."
+    assert fields["A1_application_domain"] == "Domain-specific" and fields["A1_application_domain_specify"] == "healthcare"
+    assert fields["A3_target_application"] == ["Process discovery"]
+    assert fields["B3_core_mechanism"] == "Discrete-event simulation."
+    assert any(l.startswith("**A. General information** · 2/5") for l in (e.label for e in at.expander))
+
+
+def _list_rows(at) -> list:
+    return [b for b in at.button if (b.key or "").startswith("list_")]
+
+
+def _list_titles(at) -> list[str]:
+    return [b.label.split(". ", 1)[1] for b in _list_rows(at)]
 
 
 def test_paper_list_and_prev_next(tmp_path, monkeypatch):
     at = _app(tmp_path, monkeypatch, files=("a.pdf", "b.pdf", "c.pdf"))
-    list_buttons = [b for b in at.button if (b.key or "").startswith("list_")]
-    assert len(list_buttons) == 3
+    assert _list_titles(at) == [f"Paper number {i} about things" for i in range(3)]
     assert _header_title(at) == "**Paper number 0 about things**"
-    list_buttons[2].click().run()
+    _list_rows(at)[2].click().run()
     assert _header_title(at) == "**Paper number 2 about things**"
+    assert [b.proto.type for b in _list_rows(at)] == ["tertiary", "tertiary", "primary"]  # open paper highlighted
     at.button(key="next_1").click().run()  # wraps around
     assert _header_title(at) == "**Paper number 0 about things**"
     at.button(key="prev_1").click().run()
     assert _header_title(at) == "**Paper number 2 about things**"
 
 
-def test_paper_list_grouped_by_folder(tmp_path, monkeypatch):
+def test_paper_list_folders_and_search(tmp_path, monkeypatch):
     at = _app(tmp_path, monkeypatch, files=("top.pdf", "included/x.pdf", "excluded/y.pdf"))
-    labels = [e.label for e in at.expander]
-    assert any(l.startswith("📁 (top level)") for l in labels)
-    assert any(l.startswith("📁 excluded") for l in labels) and any(l.startswith("📁 included") for l in labels)
+    assert [c.value for c in at.caption if c.value.startswith("📁")] == ["📁 (top level)", "📁 excluded", "📁 included"]
+    at.text_input(key="list_query").set_value("included").run()
+    assert len(_list_rows(at)) == 1
     assert not at.exception
+
+
+def test_status_counts_filter_list(tmp_path, monkeypatch):
+    at = _app(tmp_path, monkeypatch, files=("a.pdf", "b.pdf", "c.pdf"))
+    view = at.segmented_control(key="status_view")
+    assert view.options == ["All · 3", "In progress · 0", "Done · 0", "Excluded · 0"]
+    next(s for s in at.selectbox if s.label == "Status").set_value("done").run()
+    view = at.segmented_control(key="status_view")
+    assert view.options == ["All · 3", "In progress · 0", "Done · 1", "Excluded · 0"]
+    view.set_value("done").run()
+    assert _list_titles(at) == ["Paper number 0 about things"]
+    at.segmented_control(key="status_view").set_value("in_progress").run()
+    assert not _list_rows(at) and any("No papers match" in c.value for c in at.caption)
 
 
 def test_compare_mode(tmp_path, monkeypatch):
@@ -123,7 +156,47 @@ def test_viewer_url(settings):
 
     (paper,) = scan_papers(settings)
     url = viewer.viewer_url(paper)
-    assert url == f"/app/static/pdfjs/web/viewer.html?file=%2Fapp%2Fstatic%2Fpdf%2F{paper.paper_id}.pdf"
+    assert url == f"/app/static/pdfjs/web/viewer.html?v=nolabels&file=%2Fapp%2Fstatic%2Fpdf%2F{paper.paper_id}.pdf"
     assert (viewer.PDF_DIR / f"{paper.paper_id}.pdf").exists()
     jump = viewer.viewer_url(paper, page=3, search="randomised trial", nonce=7)
     assert jump.endswith("#page=3&search=randomised%20trial&phrase=true&n=7")
+
+
+def test_pdfjs_shows_physical_page_numbers(tmp_path, monkeypatch):
+    web = tmp_path / "pdfjs" / "web"
+    web.mkdir(parents=True)
+    (web / "viewer.html").write_text('<script src="viewer.mjs" type="module"></script>')
+    (web / "viewer.mjs").write_text("  disablePageLabels: {\n    value: false,\n  },\n    disablePageLabels: false,\n")
+    monkeypatch.setattr(viewer, "PDFJS_DIR", tmp_path / "pdfjs")
+    viewer._disable_page_labels()  # ensure_pdfjs itself is stubbed in this module
+    js = (web / "viewer.mjs").read_text()
+    assert "false" not in js and js.count("true") == 2
+    assert 'src="viewer.mjs?v=nolabels"' in (web / "viewer.html").read_text()  # bypass the browser cache
+
+
+def test_csv_mode_lists_only_screened_papers_and_excluded_view(tmp_path, monkeypatch):
+    sd = [
+        {"item_id": "sd_1", "title": "Screened paper one", "author": "Nai, Roberto", "year": "2025",
+         "doi": "10.1/x", "pdf_filename": "sd_1_included.pdf", "note": "check method"},
+        {"item_id": "sd_2", "title": "Screened paper two", "author": "", "year": "", "doi": "",
+         "pdf_filename": "", "note": ""},
+        {"item_id": "sd_9", "title": "Not downloaded", "author": "", "year": "", "doi": "",
+         "pdf_filename": "sd_9_included.pdf", "note": ""},
+    ]
+    gs = [{"item_id": "gs_1", "title": "Scholar paper", "pdf_filename": "gs_1_included.pdf"}]
+    at = _app(tmp_path, monkeypatch, csvs={"sd/results.csv": sd, "gs/results.csv": gs},
+              files=("sd/sd_1_included.pdf", "sd/sd_2.pdf", "sd/unrelated.pdf", "gs/gs_1_included.pdf"))
+    # titles from the CSVs, grouped by database folder
+    assert _list_titles(at) == ["Scholar paper", "Screened paper one", "Screened paper two"]
+    assert [c.value for c in at.caption if c.value.startswith("📁")][:2] == ["📁 gs", "📁 sd"]
+    _list_rows(at)[1].click().run()
+    assert any("sd_1 · Nai 2025 · [DOI](https://doi.org/10.1/x)" in c.value for c in at.caption)
+    assert any("Screening note: check method" in c.value for c in at.caption)
+    assert any("1 CSV row(s) without a PDF" in e.label for e in at.expander)
+
+    next(s for s in at.selectbox if s.label == "Decision").set_value("exclude").run()
+    assert at.segmented_control(key="status_view").options[0] == "All · 2"
+    assert at.segmented_control(key="status_view").options[-1] == "Excluded · 1"
+    at.segmented_control(key="status_view").set_value("__excluded__").run()
+    assert _list_titles(at) == ["Screened paper one · exclude"]
+    assert not at.exception

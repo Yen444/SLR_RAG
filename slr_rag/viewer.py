@@ -5,6 +5,7 @@ PDF.js is downloaded there once; each PDF is copied to static/pdf/<paper_id>.pdf
 """
 
 import io
+import re
 import shutil
 import urllib.parse
 import urllib.request
@@ -23,8 +24,28 @@ URL_PREFIX = "/app/static"
 
 def ensure_pdfjs() -> None:
     """Download and unpack PDF.js into static/pdfjs if it isn't there yet."""
-    if (PDFJS_DIR / "web" / "viewer.html").exists():
-        return
+    if not (PDFJS_DIR / "web" / "viewer.html").exists():
+        _download_pdfjs()
+    _disable_page_labels()
+
+
+def _disable_page_labels() -> None:
+    """Number pages 1..N in the toolbar instead of using the PDF's own labels (e.g. journal page 345)."""
+    path = PDFJS_DIR / "web" / "viewer.mjs"
+    js = path.read_bytes()
+    patched = re.sub(rb"(disablePageLabels:\s*(?:\{\s*value:\s*)?)false", rb"\1true", js)
+    if patched != js:
+        path.write_bytes(patched)
+    # Static files are served without cache headers, so browsers may keep the unpatched viewer.mjs.
+    # A new URL forces them to load the patched one.
+    html_path = PDFJS_DIR / "web" / "viewer.html"
+    html = html_path.read_bytes()
+    patched = html.replace(b'src="viewer.mjs"', b'src="viewer.mjs?v=nolabels"')
+    if patched != html:
+        html_path.write_bytes(patched)
+
+
+def _download_pdfjs() -> None:
     with urllib.request.urlopen(PDFJS_URL, timeout=120) as response:
         data = response.read()
     tmp = STATIC_DIR / "pdfjs.tmp"
@@ -47,7 +68,8 @@ def viewer_url(paper: Paper, page: int | None = None, search: str | None = None,
     """URL of the PDF.js viewer for this paper, optionally jumping to a page and highlighting a phrase.
 
     Without a page, PDF.js restores the last page and zoom used for this file."""
-    url = f"{URL_PREFIX}/pdfjs/web/viewer.html?file={urllib.parse.quote(publish(paper), safe='')}"
+    # v= is ignored by PDF.js; a new value makes browsers drop a cached, unpatched viewer.
+    url = f"{URL_PREFIX}/pdfjs/web/viewer.html?v=nolabels&file={urllib.parse.quote(publish(paper), safe='')}"
     params = {}
     if page:
         params["page"] = page
