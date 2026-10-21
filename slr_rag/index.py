@@ -1,7 +1,7 @@
 """Vector indexes (Chroma + configured embeddings), used only to find related papers.
 
 Two collections per embedding model:
-- paper level: one vector per paper (title + abstract) -> "similar to this paper"
+- paper level: one vector per paper (title + the words after "Abstract" in the PDF) -> "similar to this paper"
 - chunk level: one vector per ~1500-character chunk  -> "search by topic" (finds specific passages)
 """
 
@@ -17,9 +17,8 @@ from .catalog import Paper
 from .config import Settings
 from .pdf_text import get_pages
 
-PAPER_TEXT_CHARS = 3000
-_ABSTRACT_START = re.compile(r"(?:^|\n)\s*abstract\b\s*[:.\-—–]?\s*", re.IGNORECASE)  # heading at line start
-_ABSTRACT_END = re.compile(r"\n\s*(?:(?:\d+|I)\.?\s*)?introduction\b", re.IGNORECASE)
+# "Abstract" heading at a line start, also spaced ("A B S T R A C T", Elsevier) or followed by ":" "." "—" (IEEE)
+_ABSTRACT_START = re.compile(r"(?:^|\n)\s*a\s?b\s?s\s?t\s?r\s?a\s?c\s?t\b\s*[:.\-—–]?\s*", re.IGNORECASE)
 
 
 def _model_tag(settings: Settings) -> str:
@@ -56,20 +55,23 @@ def indexed_ids(store: Chroma) -> set[str]:
     return {m["paper_id"] for m in store.get(include=["metadatas"])["metadatas"]}
 
 
-def extract_abstract(pages: list[str]) -> str:
-    """Text after 'Abstract' up to 'Introduction' on the first two pages; else the start of the paper."""
-    head = "\n".join(pages[:2])
+def extract_abstract(pages: list[str], words: int = 300) -> str:
+    """The `words` words after the 'Abstract' heading on the first three pages (cover pages happen);
+    without such a heading, the first `words` words of the paper."""
+    head = "\n".join(pages[:3])
     start = _ABSTRACT_START.search(head)
-    rest = head[start.end():] if start else head
-    end = _ABSTRACT_END.search(rest)
-    text = rest[: end.start()] if end and end.start() > 200 else rest
-    return " ".join(text.split())[:PAPER_TEXT_CHARS]
+    text = head[start.end():] if start else "\n".join(pages)
+    return " ".join(text.split()[:words])
 
 
 def paper_text(paper: Paper, settings: Settings) -> str:
-    """What the paper-level vector represents: title + abstract."""
-    abstract = " ".join(paper.abstract.split())[:PAPER_TEXT_CHARS] or extract_abstract(get_pages(paper, settings))
-    return f"{paper.title}\n\n{abstract}"
+    """What the paper-level vector represents: title + the words after 'Abstract' in the PDF."""
+    return f"{paper.title}\n\n{extract_abstract(get_pages(paper, settings), settings.paper_level_words)}"
+
+
+def _paper_text_version(settings: Settings) -> str:
+    """Stored with each paper-level vector; vectors made another way (or with another length) are re-made."""
+    return f"abstract-{settings.paper_level_words}w"
 
 
 def index_papers(
@@ -80,7 +82,10 @@ def index_papers(
     """Embed papers missing from either index. Returns (number indexed, papers without extractable text)."""
     chunks, paper_level = get_store(settings), get_paper_store(settings)
     have_chunks = indexed_ids(chunks)
-    have_paper = set(paper_level.get(include=[])["ids"])
+    stored = paper_level.get(include=["metadatas"])
+    version = _paper_text_version(settings)
+    have_paper = {i for i, m in zip(stored["ids"], stored["metadatas"]) if (m or {}).get("text") == version}
+    outdated = [i for i in stored["ids"] if i not in have_paper]
     todo = [p for p in papers if p.paper_id not in have_chunks or p.paper_id not in have_paper]
     splitter = RecursiveCharacterTextSplitter(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
 
@@ -100,8 +105,10 @@ def index_papers(
             ]
             chunks.add_documents(docs, ids=[f"{paper.paper_id}-{k}" for k in range(len(docs))])
         if paper.paper_id not in have_paper:
+            if paper.paper_id in outdated:
+                paper_level.delete(ids=[paper.paper_id])  # Chroma ignores add() for an existing id
             doc = Document(page_content=paper_text(paper, settings),
-                           metadata={"paper_id": paper.paper_id, "title": paper.title})
+                           metadata={"paper_id": paper.paper_id, "title": paper.title, "text": version})
             paper_level.add_documents([doc], ids=[paper.paper_id])
         indexed += 1
     return indexed, no_text

@@ -102,6 +102,7 @@ class Settings(BaseModel):
     chunk_size: int = 1500
     chunk_overlap: int = 200
     similar_top_k: int = 10
+    paper_level_words: int = 300  # "similar to this paper" compares the title + this many words after "Abstract"
     max_context_chars: int = 400_000
     csv_columns: dict[str, list[str]] = {}  # merged over DEFAULT_CSV_COLUMNS
 

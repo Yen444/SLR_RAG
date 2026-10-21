@@ -19,11 +19,11 @@ ai_instructions: |
   This systematic literature review is about approaches that generate, simulate or augment
   synthetic event logs for process mining.
   - Only report what the paper states. Prefer null over a guess.
-  - Leave every "Notes" field (A5, B2, C6, D4, E4, F6, H1) empty: they are for the human coder.
+  - Leave every "Notes" field (A5, B2, C4, D6, E3, F6) and "Additional notes" empty: they are for the human coder.
   - Distinguish what the authors contribute from functionality inherited from existing tools.
-  - C3: list a perspective only if the generation mechanism explicitly models, controls or reproduces it,
+  - D3: list a perspective only if the generation mechanism explicitly models, controls or reproduces it,
     not just because an attribute appears in the output.
-  - D2: select only attributes present in the generated output, not attributes of the input or model.
+  - C2: select only attributes present in the generated output, not attributes of the input or model.
   - G2: write limitations you notice yourself, and mark them as interpretation ("Possibly ...").
   - Multi-select fields: choose every option that applies. Pick "Other (specify)" only when no option
     fits, and then write the value in the `specify` text.
@@ -105,62 +105,16 @@ sections:
         height: 68
         description: Additional information about the required input.
 
-  - title: C. Generation / simulation / augmentation methodology
-    fields:
-      - name: core_mechanism
-        label: C1. Core mechanism
-        type: longtext
-        height: 320
-        description: >-
-          Explain in detail how the approach generates, simulates, or augments synthetic event logs,
-          including the main processing steps and relevant execution mechanisms.
-        placeholder: "Step by step: 1) … 2) … 3) …  Execution mechanism (e.g. discrete-event simulation, token game, generative model, LLM)…"
-
-      - name: methodological_novelty
-        label: C2. Main methodological novelty
-        type: longtext
-        description: What specific methodological contribution does the paper introduce compared with existing approaches?
-
-      - name: process_perspectives
-        label: C3. Modeled process perspectives
-        type: longtext
-        description: >-
-          Which aspects of process behaviour are explicitly modelled, controlled, or reproduced by the generation
-          mechanism (e.g. control flow, time, resources, data, inter-case interactions)? Do not infer behavioural
-          modelling solely from the presence of an attribute in the generated output.
-        placeholder: e.g. Control flow (BPMN), time (duration distributions), resources (calendars, allocation)
-
-      - name: additional_capabilities
-        label: C4. Additional generation capabilities
-        type: longtext
-        description: >-
-          Additional capabilities, such as noise injection, trace variability control, constraint satisfaction,
-          negative trace generation, or conditional generation.
-
-      - name: external_tools
-        label: C5. External tools and dependencies
-        type: longtext
-        description: >-
-          Which existing simulators, libraries, solvers, models, or platforms are used? Distinguish the authors'
-          contributions from inherited functionality.
-        placeholder: "e.g. Built on BIMP (inherited: simulation engine); new: calendar discovery"
-
-      - name: methodology_notes
-        label: C6. Notes
-        type: longtext
-        height: 68
-        description: Additional methodological details or observations.
-
-  - title: D. Output (generated synthetic event log)
+  - title: C. Output
     fields:
       - name: generated_output
-        label: D1. Generated output
+        label: C1. Generated output
         type: longtext
         description: What does the approach produce?
         placeholder: e.g. Event log with start/end timestamps and resources; also a simulation model
 
       - name: log_attributes
-        label: D2. Generated event-log attributes
+        label: C2. Generated event-log attributes
         type: multiselect
         options:
           - Case ID
@@ -179,58 +133,80 @@ sections:
           Start and end timestamps may both be selected.
 
       - name: output_format
-        label: D3. Output format
+        label: C3. Output format
         type: multiselect
         options: [XES, CSV, JSON, Database, Tool-specific format, Other (specify)]
         specify: Other (specify) / tool-specific format
         description: In which format(s) is the generated log written?
 
       - name: output_notes
-        label: D4. Notes
+        label: C4. Notes
         type: longtext
         height: 68
         description: Additional information about generated event logs, output structure, or format.
 
+  - title: D. Methodology
+    fields:
+      - name: core_mechanism
+        label: D1. Core mechanism
+        type: longtext
+        height: 320
+        description: >-
+          Explain in detail how the approach generates, simulates, or augments synthetic event logs,
+          including the main processing steps and relevant execution mechanisms.
+        placeholder: "Step by step: 1) … 2) … 3) …  Execution mechanism (e.g. discrete-event simulation, token game, generative model, LLM)…"
+
+      - name: methodological_novelty
+        label: D2. Main methodological novelty
+        type: longtext
+        description: What specific methodological contribution does the paper introduce compared with existing approaches?
+
+      - name: process_perspectives
+        label: D3. Modeled process perspectives
+        type: longtext
+        description: >-
+          Which aspects of process behaviour are explicitly modelled, controlled, or reproduced by the generation
+          mechanism (e.g. control flow, time, resources, data, inter-case interactions)? Do not infer behavioural
+          modelling solely from the presence of an attribute in the generated output.
+        placeholder: e.g. Control flow (BPMN), time (duration distributions), resources (calendars, allocation)
+
+      - name: additional_capabilities
+        label: D4. Additional generation capabilities
+        type: longtext
+        description: >-
+          Additional capabilities, such as noise injection, trace variability control, constraint satisfaction,
+          negative trace generation, or conditional generation.
+
+      - name: external_tools
+        label: D5. External tools and dependencies
+        type: longtext
+        description: >-
+          Which existing simulators, libraries, solvers, models, or platforms are used? Distinguish the authors'
+          contributions from inherited functionality.
+        placeholder: "e.g. Built on BIMP (inherited: simulation engine); new: calendar discovery"
+
+      - name: methodology_notes
+        label: D6. Notes
+        type: longtext
+        height: 68
+        description: Additional methodological details or observations.
+
   - title: E. Configurability
     fields:
       - name: configurable_aspects
-        label: E1. Configurable aspects
-        type: multiselect
-        options:
-          - Process model / control flow
-          - Number of cases / log size
-          - Trace length
-          - Arrival patterns
-          - Activity durations
-          - Resource availability / allocation
-          - Data attributes
-          - Routing probabilities
-          - Noise level
-          - Random seed
-          - Other (specify)
-        specify: Other (specify)
-        description: Which aspects can users explicitly configure?
-
-      - name: configuration_mechanism
-        label: E2. Configuration mechanism
-        type: multiselect
-        options:
-          - Graphical user interface
-          - Configuration file
-          - API / programming interface
-          - Model annotations
-          - Prompts / natural language
-          - Other (specify)
-        specify: Other (specify)
-        description: How does the user configure the generation?
+        label: E1. What can be configured
+        type: longtext
+        description: >-
+          Which aspects can users explicitly configure (e.g. process model, number of cases, arrival patterns,
+          durations, resources, data attributes, noise, random seed), and how (GUI, configuration file, API, ...)?
 
       - name: configuration_limitations
-        label: E3. Configuration limitations
+        label: E2. Configuration limitations
         type: longtext
         description: What aspects are fixed, restricted, or difficult to configure?
 
       - name: configuration_notes
-        label: E4. Notes
+        label: E3. Notes
         type: longtext
         height: 68
         description: Additional information about configurability.
@@ -306,12 +282,10 @@ sections:
   - title: H. Additional notes
     fields:
       - name: general_notes
-        label: H1. General notes
+        label: Additional notes
         type: longtext
-        description: Additional observations, ambiguities, implementation details, or information not covered by the predefined fields.
-
-      - name: evidence_references
-        label: H2. Evidence and references
-        type: longtext
-        description: Supporting page numbers, sections, figures, tables, or relevant quotations for key coding decisions.
-        placeholder: e.g. C1 → Sec. 4.2, Fig. 3 (p. 7); D2 → Table 2 (p. 9)
+        height: 120
+        description: >-
+          Additional observations, ambiguities, implementation details, or information not covered by the
+          predefined fields, including evidence references (pages, sections, figures, tables, quotations)
+          for key coding decisions.

@@ -9,7 +9,9 @@ CSV files, only linked papers are reviewed. The CSVs are never modified; `export
 
 import dataclasses
 import html
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -21,7 +23,7 @@ from .config import ReviewConfig, Settings
 
 # Databases name their columns differently (title / Document Title / Item Title, ...). Each piece of
 # information is copied into an internal "_<name>" column, found via settings.csv_columns.
-ID, PDF, TITLE, ABSTRACT, NOTE, DECISION = "_item_id", "_pdf_filename", "_title", "_abstract", "_note", "_final_decision"
+ID, PDF, TITLE, NOTE, DECISION = "_item_id", "_pdf_filename", "_title", "_note", "_final_decision"
 AUTHORS, YEAR, VENUE, DOI = "_authors", "_year", "_venue", "_doi"
 FOLDER = "source_folder"  # added column: the CSV's folder relative to papers_dir ('' for the top level)
 _DECISION_SUFFIX = re.compile(r"_(included|excluded)$", re.IGNORECASE)
@@ -29,7 +31,7 @@ _DECISION_SUFFIX = re.compile(r"_(included|excluded)$", re.IGNORECASE)
 
 @dataclass
 class Scope:
-    papers: list[Paper]  # PDFs listed in a CSV, with title/abstract from the CSV
+    papers: list[Paper]  # PDFs listed in a CSV, with the title from the CSV
     rows: dict[str, int] = field(default_factory=dict)  # paper_id -> row index in the records table
     missing: list[dict] = field(default_factory=list)  # CSV rows without a PDF
     hidden: list[Paper] = field(default_factory=list)  # PDFs not listed in any CSV
@@ -49,13 +51,18 @@ def _key(column: str) -> str:
     return re.sub(r"[\s_]+", "", column).casefold()
 
 
+def _find_column(columns, candidates: list[str]) -> str | None:
+    """The first of `candidates` that is one of `columns` (ignoring case, spaces and underscores)."""
+    by_key = {}
+    for column in columns:
+        by_key.setdefault(_key(column), column)
+    return next((by_key[_key(c)] for c in candidates if _key(c) in by_key), None)
+
+
 def _internal_columns(frame: pd.DataFrame, settings: Settings) -> pd.DataFrame:
     """Add the "_<name>" columns, each copied from the first matching column of this CSV ('' if none)."""
-    by_key = {}
-    for column in frame.columns:
-        by_key.setdefault(_key(column), column)
     for name, candidates in settings.csv_columns.items():
-        column = next((by_key[_key(c)] for c in candidates if _key(c) in by_key), None)
+        column = _find_column(frame.columns, candidates)
         frame[f"_{name}"] = frame[column] if column else ""
     frame[TITLE] = frame[TITLE].map(lambda t: " ".join(html.unescape(t).split()))  # "from&#xa0;Hybrid"
     frame[YEAR] = frame[YEAR].map(lambda y: (re.search(r"\d{4}", y) or [""])[0])  # "2016.0" -> "2016"
@@ -120,8 +127,7 @@ def scope(papers: list[Paper], records: pd.DataFrame) -> Scope:
     for paper in papers:
         if paper.paper_id in rows:
             row = records.loc[rows[paper.paper_id]]
-            in_scope.append(dataclasses.replace(
-                paper, title=row.get(TITLE) or paper.title, abstract=row.get(ABSTRACT) or ""))
+            in_scope.append(dataclasses.replace(paper, title=row.get(TITLE) or paper.title))
     linked = set(rows.values())
     return Scope(
         papers=in_scope,
@@ -171,7 +177,7 @@ def export(records: pd.DataFrame, sc: Scope, papers: list[Paper], settings: Sett
     saved = store.load_all(settings)
     by_id = {p.paper_id: p for p in papers}
     pid_of = {i: pid for pid, i in sc.rows.items()}
-    item_of = {pid: records.loc[i].get(ID, "") for pid, i in sc.rows.items()}
+    filename_of = {p.paper_id: p.filename for p in papers}
     rows = []
     for i in records.index:
         pid = pid_of.get(i)
@@ -179,22 +185,58 @@ def export(records: pd.DataFrame, sc: Scope, papers: list[Paper], settings: Sett
         if pid not in by_id:  # no PDF
             rows.append({"final_decision_updated": original})
             continue
-        ann = saved.get(pid) or store.default_annotation(by_id[pid], review)
+        ann = store.default_annotation(by_id[pid], review) | saved.get(pid, {})
         rows.append({
             "final_decision_updated": "excluded" if ann["decision"] == review.exclude_decision else original,
             "review_status": ann["status"],
             "review_decision": ann["decision"],
             "review_exclusion_reason": ann.get("exclusion_reason"),
-            "review_reason_text": ann.get("reason_text", ""),
-            "review_reason_note": ann.get("reason_note", ""),
-            "review_notes": ann.get("notes", ""),
-            "linked_item_ids": ";".join(item_of.get(l) or l for l in ann.get("linked_papers", [])),
+            "review_exclusion_note": ann.get("exclusion_note") or ann.get("reason_note", ""),
+            "linked_papers": store.linked_names(ann, filename_of),
+            "review_relation_note": ann.get("relation_note", ""),
         } | store.field_columns(ann["fields"], review))
     columns = ["final_decision_updated", "review_status", "review_decision", "review_exclusion_reason",
-               "review_reason_text", "review_reason_note", "review_notes", "linked_item_ids",
+               "review_exclusion_note", "linked_papers", "review_relation_note",
                *store.field_columns({}, review)]
     added = pd.DataFrame(rows, index=records.index, columns=columns).astype(object).fillna("")
     out = records.drop(columns=internal_columns(settings), errors="ignore")
     for name in columns:
         out[name if name not in out else f"extract_{name}"] = added[name]  # never overwrite an original column
     return out
+
+
+def reviewed_path(source_csv: str, settings: Settings) -> Path:
+    """data/reviewed/<database>/<name>_reviewed.csv for papers/<database>/<name>.csv"""
+    rel = PurePosixPath(source_csv)
+    return settings.data_dir / "reviewed" / rel.parent / f"{rel.stem}_reviewed.csv"
+
+
+def write_reviewed(records: pd.DataFrame, sc: Scope, papers: list[Paper], settings: Settings,
+                   review: ReviewConfig) -> list[str]:
+    """Write one up-to-date copy of each screening CSV (the originals are never touched).
+
+    Each copy has the CSV's own columns plus the review and extraction columns. Its decision column
+    holds the decision after this review (e.g. 'excluded'); the screening decision is kept in
+    `screening_final_decision`. Returns error messages (e.g. a file open in Excel), empty if all went well."""
+    table = export(records, sc, papers, settings, review)
+    added = [c for c in table.columns if c not in records.columns]
+    errors = []
+    for source, rows in table.groupby("source_csv", sort=False):
+        original = list(pd.read_csv(settings.papers_dir / source, encoding="utf-8-sig", nrows=0).columns)
+        rows = rows[original + added].copy()
+        updated = rows.pop("final_decision_updated")
+        column = _find_column(original, settings.csv_columns["final_decision"]) or "final_decision"
+        if column in rows:
+            rows.insert(rows.columns.get_loc(column) + 1, "screening_final_decision", rows[column])
+        rows[column] = updated
+        path = reviewed_path(source, settings)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as f:
+                rows.to_csv(f, index=False)
+            os.replace(tmp, path)
+        except OSError as e:  # PermissionError while the file is open in Excel
+            Path(tmp).unlink(missing_ok=True)
+            errors.append(f"{path.name}: {e.strerror or e}")
+    return errors

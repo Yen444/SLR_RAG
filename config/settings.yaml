@@ -50,6 +50,7 @@ embedding_models:
 chunk_size: 1500
 chunk_overlap: 200
 similar_top_k: 10
+paper_level_words: 300        # "Similar to this paper" compares the title + this many words after "Abstract" in the PDF
 
 # Very long papers are cut to this many characters before being sent to the chat model
 max_context_chars: 400000

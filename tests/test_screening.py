@@ -64,7 +64,6 @@ def test_scope_matches_pdfs_to_the_csv_of_their_own_folder(screened):
         "Real Title One": "sd/sd_1_included.pdf",
         "Real Title Two": "sd/pdfs/sd_2_included.pdf",  # CSV in a folder above the PDF
     }
-    assert _by_title(sc, "Real Title One").abstract == "Abstract one."
     assert [r["item_id"] for r in sc.missing] == ["sd_3"]
     assert sorted(p.filename for p in sc.hidden) == ["sd/other.pdf", "sd/paper_1.pdf"]
 
@@ -100,8 +99,10 @@ def test_export_keeps_original_columns_and_links_across_databases(screened, sett
     assert row["final_decision"] == "included" and row["final_decision_updated"] == "excluded"
     assert row["review_exclusion_reason"] == "off topic"
     assert row["design"] == "RCT" and row["methods"] == "survey"
-    assert row["linked_item_ids"] == "gs_1"  # linked across databases
-    assert df[df["title"] == "Scholar One"].iloc[0]["linked_item_ids"] == "sd_1"
+    assert row["linked_papers"] == "paper_1"  # gs/paper_1.pdf: linked across databases, by file name
+    assert df[df["title"] == "Scholar One"].iloc[0]["linked_papers"] == "sd_1_included"
+    saved = store.get(one, settings, review)
+    assert saved["linked_files"] == ["paper_1"] and "chat_history" not in saved
     assert df[df["title"] == "No PDF"].iloc[0]["review_status"] == ""
 
 
@@ -139,3 +140,33 @@ def test_column_names_differ_across_databases(settings):
 def _review():
     from slr_rag.config import ReviewConfig
     return ReviewConfig(statuses=["todo", "done"], decisions=["include", "exclude"])
+
+
+def test_write_reviewed_keeps_an_updated_copy_per_database(screened, settings, review, monkeypatch):
+    _, records, sc = screened
+    one = _by_title(sc, "Real Title One")
+    ann = store.get(one, settings, review)
+    ann["decision"], ann["exclusion_reason"] = "exclude", "off topic"
+    store.save(ann, settings)
+
+    assert screening.write_reviewed(records, sc, sc.papers, settings, review) == []
+    sd = pd.read_csv(settings.data_dir / "reviewed" / "sd" / "results_reviewed.csv", dtype=str, keep_default_na=False)
+    gs = pd.read_csv(settings.data_dir / "reviewed" / "gs" / "results_reviewed.csv", dtype=str, keep_default_na=False)
+    assert list(sd.columns[:8]) == COLUMNS[:8] and list(sd.columns).index("screening_final_decision") == 8
+    assert "source_csv" not in sd.columns and not [c for c in sd.columns if c.startswith("_")]
+    row = sd[sd["item_id"] == "sd_1"].iloc[0]
+    assert row["final_decision"] == "excluded" and row["screening_final_decision"] == "included"
+    assert row["review_exclusion_reason"] == "off topic"
+    assert sd[sd["item_id"] == "sd_2"].iloc[0]["final_decision"] == "included"
+    assert list(gs["item_id"]) == ["gs_1"]
+    # the original CSV is untouched
+    original = pd.read_csv(settings.papers_dir / "sd" / "results.csv", dtype=str, keep_default_na=False)
+    assert list(original["final_decision"]) == ["included"] * 4 and list(original.columns) == COLUMNS
+
+    def locked(*args):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(screening.os, "replace", locked)  # e.g. open in Excel
+    errors = screening.write_reviewed(records, sc, sc.papers, settings, review)
+    assert len(errors) == 2 and "Permission denied" in errors[0]
+    assert not list((settings.data_dir / "reviewed" / "sd").glob("*.tmp"))

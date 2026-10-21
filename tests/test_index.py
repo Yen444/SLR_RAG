@@ -55,12 +55,23 @@ def test_index_adds_missing_paper_vectors(settings, papers):
     assert index.get_paper_store(settings).get(ids=[pets[0].paper_id])["ids"] == [pets[0].paper_id]
 
 
-def test_extract_abstract():
-    pages = ["Journal X\nA Title\nAbstract: We study cats. " + "Cats are great. " * 20
-             + "\n1. Introduction\nLong intro text"]
-    abstract = index.extract_abstract(pages)
-    assert abstract.startswith("We study cats.") and "intro" not in abstract.lower()
-    assert index.extract_abstract(["No abstract heading here"]) == "No abstract heading here"
+def test_extract_abstract_takes_words_after_the_heading():
+    body = " ".join(f"w{i}" for i in range(400))
+    assert index.extract_abstract([f"Journal X\nA Title\nAbstract: {body}"]) == " ".join(f"w{i}" for i in range(300))
+    assert index.extract_abstract([f"Cover page", f"A B S T R A C T\n{body}"], words=3) == "w0 w1 w2"  # Elsevier
+    assert index.extract_abstract([f"Abstract—{body}"], words=2) == "w0 w1"  # IEEE
+    assert index.extract_abstract(["No heading here at all", "second page"], words=4) == "No heading here at"
+    assert index.extract_abstract(["The abstract idea of ..."], words=2) == "The abstract"  # not at a line start
+
+
+def test_paper_vectors_made_another_way_are_remade(settings, papers):
+    pets = [papers["pets1.pdf"]]
+    index.index_papers(pets, settings)
+    settings.paper_level_words = 2
+    assert index.index_papers(pets, settings)[0] == 1  # re-made with the new length, chunks untouched
+    stored = index.get_paper_store(settings).get(ids=[pets[0].paper_id], include=["documents", "metadatas"])
+    assert stored["metadatas"][0]["text"] == "abstract-2w" and stored["documents"][0].endswith("cat dog")
+    assert index.index_papers(pets, settings)[0] == 0
 
 
 def test_similar_and_search(settings, papers):
