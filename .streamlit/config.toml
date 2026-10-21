@@ -1,0 +1,10 @@
+[server]
+# Serves ./static at /app/static (PDF.js viewer and the PDFs it shows)
+enableStaticServing = true
+
+[theme]
+base = "light"
+primaryColor = "#2563eb"
+backgroundColor = "#e8ecf1"           # page background; panels are white cards on top
+secondaryBackgroundColor = "#f3f5f8"  # sidebar and input fields
+textColor = "#1e293b"

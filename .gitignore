@@ -1,0 +1,15 @@
+# secrets
+.env
+
+# papers + screening CSVs, and generated data (text cache, vector index, annotations)
+papers/
+data/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# PDF.js viewer + copies of PDFs served by Streamlit
+static/
