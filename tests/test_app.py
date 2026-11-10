@@ -8,7 +8,7 @@ import yaml
 from streamlit.testing.v1 import AppTest
 
 from slr_rag import viewer
-from slr_rag.config import ROOT
+from slr_rag.config import ROOT, load_review
 
 from .conftest import MODELS, make_pdf
 
@@ -63,19 +63,23 @@ def test_app_renders_and_saves_status(tmp_path, monkeypatch):
 
 def test_decision_reason_fields_save(tmp_path, monkeypatch):
     at = _app(tmp_path, monkeypatch)
-    reason = next(s for s in at.selectbox if s.label == "Exclusion reason")
-    assert reason.disabled  # only for the exclude decision
+    reasons = next(m for m in at.multiselect if m.label == "Exclusion reasons")
+    assert reasons.disabled  # only for the exclude and unsure decisions
     next(s for s in at.selectbox if s.label == "Decision").set_value("exclude").run()
-    next(s for s in at.selectbox if s.label == "Exclusion reason").set_value("other").run()
-    next(t for t in at.text_input if t.label == "Exclusion note").set_value("same data as another paper").run()
+    first, second = load_review().exclusion_reasons[:2]  # the shipped config/review.yaml
+    next(m for m in at.multiselect if m.label == "Exclusion reasons").set_value([second, first]).run()
+    next(t for t in at.text_input if t.label == "Decision note").set_value("same data as another paper").run()
     assert not any(t.label == "Reason (optional)" for t in at.text_input)
     assert not at.exception
     (ann,) = _annotations(tmp_path)
-    assert ann["decision"] == "exclude" and ann["exclusion_reason"] == "other"
-    assert ann["exclusion_note"] == "same data as another paper"
+    assert ann["decision"] == "exclude" and ann["decision_reasons"] == [second, first]  # order kept
+    assert ann["decision_note"] == "same data as another paper"
+    next(s for s in at.selectbox if s.label == "Decision").set_value("maybe").run()  # unsure: same reasons
+    reasons = next(m for m in at.multiselect if m.label == "Unsure reasons")
+    assert not reasons.disabled and reasons.value == [second, first]
     next(s for s in at.selectbox if s.label == "Decision").set_value("include").run()  # changed back: saved again
     (ann,) = _annotations(tmp_path)
-    assert ann["decision"] == "include" and ann["exclusion_reason"] is None
+    assert ann["decision"] == "include" and ann["decision_reasons"] == []
 
 
 def test_related_paper_from_another_database(tmp_path, monkeypatch):
@@ -184,26 +188,83 @@ def test_subfolders_belong_to_their_database(tmp_path, monkeypatch):
 def test_status_counts_filter_list(tmp_path, monkeypatch):
     at = _app(tmp_path, monkeypatch, files=("a.pdf", "b.pdf", "c.pdf"))
     view = at.segmented_control(key="status_view")
-    assert view.options == ["All · 3", "In progress · 0", "Done · 0", "Excluded · 0"]
+    assert view.value == "todo"  # every session starts on the todo papers
+    assert view.options == ["All · 3", "Todo · 3", "In progress · 0", "Done · 0", "Pending · 0"]
+    assert at.segmented_control(key="decision_view").options == ["Include · 3", "Exclude · 0", "Maybe · 0"]
     next(s for s in at.selectbox if s.label == "Status").set_value("done").run()
     view = at.segmented_control(key="status_view")
-    assert view.options == ["All · 3", "In progress · 0", "Done · 1", "Excluded · 0"]
-    view.set_value("done").run()
-    assert _db_rows(at) == ["(top level) · 1"]
+    assert view.options == ["All · 3", "Todo · 2", "In progress · 0", "Done · 1", "Pending · 0"]
     _open_db(at)
+    assert _list_titles(at) == ["Paper number 1 about things", "Paper number 2 about things"]  # done one left
+    at.segmented_control(key="status_view").set_value("done").run()
+    assert _db_rows(at) == ["(top level) · 1"]
     assert _list_titles(at) == ["Paper number 0 about things"]
     at.segmented_control(key="status_view").set_value("in_progress").run()
     assert not _list_rows(at) and any("No papers match" in c.value for c in at.caption)
-    at.segmented_control(key="status_view").set_value(None).run()
-    at.multiselect(key="decision_filter").set_value(["include"]).run()
+
+    # decisions don't hide papers from the status lists; the two rows combine
+    next(s for s in at.selectbox if s.label == "Decision").set_value("maybe").run()  # paper 0, still done
+    at.segmented_control(key="status_view").set_value("done").run()
+    assert _list_titles(at) == ["Paper number 0 about things · maybe"]
+    assert at.segmented_control(key="decision_view").options == ["Include · 0", "Exclude · 0", "Maybe · 1"]
+    at.segmented_control(key="decision_view").set_value("include").run()
+    assert not _list_rows(at)
+    assert at.segmented_control(key="status_view").options == ["All · 2", "Todo · 2", "In progress · 0",
+                                                               "Done · 0", "Pending · 0"]  # includes only
+    at.segmented_control(key="status_view").set_value("__all__").run()  # All + Include: every included paper
+    assert len(_list_rows(at)) == 2
+    at.segmented_control(key="decision_view").set_value(None).run()
     assert len(_list_rows(at)) == 3
+
+
+def test_new_session_opens_first_todo_paper(tmp_path, monkeypatch):
+    at = _app(tmp_path, monkeypatch, files=("a.pdf", "b.pdf"))
+    next(s for s in at.selectbox if s.label == "Status").set_value("done").run()  # paper 0 done
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=30)  # a new session, like a refresh
+    at.run()
+    assert not at.exception
+    assert at.segmented_control(key="status_view").value == "todo"
+    assert _header_title(at) == "**Paper number 1 about things**"
+
+
+def test_pending_mark_note_and_list(tmp_path, monkeypatch):
+    at = _open_db(_app(tmp_path, monkeypatch, files=("a.pdf", "b.pdf", "c.pdf")))
+    _list_rows(at)[1].click().run()
+    assert not any(t.label == "🕓 Pending note" for t in at.text_input)  # only for pending papers
+    next(b for b in at.button if (b.key or "").startswith("pending_1_")).click().run()
+    (ann,) = _annotations(tmp_path)
+    assert ann["pending"] is True
+    next(t for t in at.text_input if t.label == "🕓 Pending note").set_value("read section 4").run()
+    assert _annotations(tmp_path)[0]["pending_note"] == "read section 4"
+    view = at.segmented_control(key="status_view")
+    assert view.options == ["All · 3", "Todo · 2", "In progress · 0", "Done · 0", "Pending · 1"]
+    assert _list_titles(at) == ["Paper number 0 about things", "Paper number 2 about things"]  # out of todo
+    view.set_value(None).run()
+    assert "🕓 Todo · Paper number 1 about things" in _list_titles(at)  # still under All, with its status
+    at.segmented_control(key="status_view").set_value("__pending__").run()
+    assert _list_titles(at) == ["🕓 Todo · Paper number 1 about things"]
+    assert _list_rows(at)[0].help == "read section 4"  # the note as tooltip
+    next(s for s in at.selectbox if s.label == "Status").set_value("in_progress").run()
+    at.segmented_control(key="status_view").set_value("in_progress").run()
+    assert _list_titles(at) == ["🕓 In progress · Paper number 1 about things"]  # only todo leaves out pending
+    next(b for b in at.button if (b.key or "").startswith("pending_1_")).click().run()  # unmark
+    (ann,) = _annotations(tmp_path)
+    assert ann["pending"] is False and ann["pending_note"] == "read section 4"  # note kept
+    assert _list_titles(at) == ["Paper number 1 about things"]
+    next(s for s in at.selectbox if s.label == "Status").set_value("todo").run()
+    at.segmented_control(key="status_view").set_value("todo").run()
+    assert len(_list_rows(at)) == 3  # back in todo
 
 
 def test_compare_mode(tmp_path, monkeypatch):
     at = _app(tmp_path, monkeypatch)
     at.toggle(key="compare").set_value(True).run()
     assert not at.exception
-    assert at.button(key="prev_2") and at.radio(key="open_side")
+    assert at.button(key="prev_2")
+    before = (at.session_state["slot1"], at.session_state["slot2"])
+    assert before[0] != before[1]
+    at.button(key="swap").click().run()
+    assert (at.session_state["slot1"], at.session_state["slot2"]) == before[::-1]
 
 
 def test_model_picker_and_key_warning(tmp_path, monkeypatch):
@@ -247,6 +308,45 @@ def test_pdfjs_shows_physical_page_numbers(tmp_path, monkeypatch):
     assert 'src="viewer.mjs?v=nolabels"' in (web / "viewer.html").read_text()  # bypass the browser cache
 
 
+def test_related_papers_list_their_authors(tmp_path, monkeypatch):
+    rows = [{"item_id": "sd_1", "title": "First", "author": "Nai, Roberto and Sulis, Emilio", "pdf_filename": "sd_1.pdf"},
+            {"item_id": "sd_2", "title": "Second", "author": "Lee, Sam", "pdf_filename": "sd_2.pdf"},
+            {"item_id": "sd_3", "title": "Third", "author": "", "pdf_filename": "sd_3.pdf"}]
+    at = _app(tmp_path, monkeypatch, csvs={"sd/results.csv": rows}, files=("sd/sd_1.pdf", "sd/sd_2.pdf", "sd/sd_3.pdf"))
+    _open_db(at, "sd")
+    _list_rows(at)[1].click().run()
+    assert _header(at)[0] == "Second"
+    for title in ("First", "Third"):
+        next(b for b in at.button if b.label == "Add related paper").click().run()
+        next(s for s in at.selectbox if s.label == "Database").set_value("sd").run()
+        next(s for s in at.selectbox if s.label == "Paper").set_value(title).run()
+    assert not at.exception, at.exception
+    rows = [m.value for m in at.markdown if m.value.startswith("🔗")]
+    assert rows == ["🔗 First (Nai, Roberto; Sulis, Emilio)", "🔗 Third"]  # no brackets without authors
+
+
+def test_author_tab_finds_other_papers_across_databases(tmp_path, monkeypatch):
+    sd = [{"item_id": "sd_1", "title": "Zebra", "author": "Wil M.P. {van der Aalst} and Sam Lee", "pdf_filename": "sd_1.pdf"},
+          {"item_id": "sd_2", "title": "Other", "author": "Sam Lee", "pdf_filename": "sd_2.pdf"}]
+    gs = [{"item_id": "gs_1", "title": "Apple", "author": "G Li, WMP van der Aalst", "pdf_filename": "gs_1.pdf"},
+          {"item_id": "gs_2", "title": "Current", "author": "W van der Aalst", "pdf_filename": "gs_2.pdf"}]
+    at = _app(tmp_path, monkeypatch, csvs={"sd/results.csv": sd, "gs/results.csv": gs},
+              files=("sd/sd_1.pdf", "sd/sd_2.pdf", "gs/gs_1.pdf", "gs/gs_2.pdf"))
+    _open_db(at, "gs")
+    _list_rows(at)[1].click().run()
+    assert _header(at)[0] == "Current"
+    author = next(t for t in at.text_input if t.label == "Author")
+    author.set_value("Wil Aalst").run()  # not in any author column as written
+    assert any(c.value.startswith("0 other papers") for c in at.caption)
+    next(t for t in at.text_input if t.label == "Author").set_value("VAN DER aalst").run()
+    assert not at.exception, at.exception
+    rows = [m.value for m in at.markdown if "Aalst" in m.value and not m.value.startswith("<")]
+    assert rows == ["Apple (G Li; WMP van der Aalst)", "Zebra (Wil M.P. {van der Aalst}; Sam Lee)"]  # not itself
+    assert any(c.value.startswith("2 other papers") for c in at.caption)
+    next(b for b in at.button if "link_author" in b.key).click().run()
+    assert not at.exception, at.exception
+
+
 def test_csv_mode_lists_only_screened_papers_and_excluded_view(tmp_path, monkeypatch):
     sd = [
         {"item_id": "sd_1", "title": "Screened paper one", "author": "Nai, Roberto", "year": "2025",
@@ -267,9 +367,9 @@ def test_csv_mode_lists_only_screened_papers_and_excluded_view(tmp_path, monkeyp
     assert any("1 CSV row(s) without a PDF" in e.label for e in at.expander)
 
     next(s for s in at.selectbox if s.label == "Decision").set_value("exclude").run()
-    assert at.segmented_control(key="status_view").options[0] == "All · 1"  # in the open database
-    assert at.segmented_control(key="status_view").options[-1] == "Excluded · 1"
-    at.segmented_control(key="status_view").set_value("__excluded__").run()
+    assert at.segmented_control(key="status_view").options[0] == "All · 2"  # in the open database
+    assert at.segmented_control(key="decision_view").options[1] == "Exclude · 1"
+    at.segmented_control(key="decision_view").set_value("exclude").run()
     assert _list_titles(at) == ["Screened paper one · exclude"]
     reviewed = pd.read_csv(tmp_path / "data" / "reviewed" / "sd" / "results_reviewed.csv", dtype=str)
     assert reviewed.set_index("item_id").loc["sd_1", "final_decision"] == "excluded"  # updated copy kept current
@@ -327,3 +427,52 @@ def test_similar_papers_listed_with_title_and_file_name(tmp_path, monkeypatch):
     assert any(m.value == "🔗 Paper number 1 about things" for m in at.markdown)  # listed in the decision box
     ann = next(a for a in _annotations(tmp_path) if a["paper_id"] == pid)
     assert ann["linked_files"] == ["science_direct_4_included"]
+
+
+def test_tags_and_approaches_typed_on_a_paper(tmp_path, monkeypatch):
+    at = _app(tmp_path, monkeypatch)
+    next(m for m in at.multiselect if m.label == "Tags").set_value(["Petri net", "simulation"]).run()
+    next(m for m in at.multiselect if m.label == "Approaches").set_value(["Model-based simulation"]).run()
+    assert not at.exception, at.exception
+    (ann,) = _annotations(tmp_path)
+    assert ann["tags"] == ["Petri net", "simulation"] and ann["approaches"] == [1]
+    approaches = json.loads((tmp_path / "data" / "approaches.json").read_text(encoding="utf-8"))["approaches"]
+    assert approaches == [{"number": 1, "name": "Model-based simulation", "description": ""}]
+    box = next(m for m in at.multiselect if m.label == "Approaches")
+    assert box.value == ["1. Model-based simulation"] and "1. Model-based simulation" in box.options
+
+
+def test_clicking_a_paper_leaves_the_coding_overview(tmp_path, monkeypatch):
+    at = _open_db(_app(tmp_path, monkeypatch, files=("a.pdf", "b.pdf")))
+    next(s for s in at.selectbox if s.label == "Status").set_value("done").run()  # done papers stay editable
+    next(b for b in at.sidebar.button if "Tags & approaches" in b.label).click().run()
+    assert not any(s.label == "Status" for s in at.selectbox)  # overview: no review panel
+    at.segmented_control(key="status_view").set_value("done").run()
+    _list_rows(at)[0].click().run()
+    assert _header_title(at) == "**Paper number 0 about things**"
+    status = next(s for s in at.selectbox if s.label == "Status")
+    status.set_value("in_progress").run()
+    assert _annotations(tmp_path)[0]["status"] == "in_progress"
+
+
+def test_coding_overview_add_approach_and_merge_tags(tmp_path, monkeypatch):
+    at = _app(tmp_path, monkeypatch)
+    next(m for m in at.multiselect if m.label == "Tags").set_value(["petrinet", "Petri net"]).run()
+    next(b for b in at.sidebar.button if "Tags & approaches" in b.label).click().run()
+    assert not at.exception, at.exception
+    assert any("Tags & approaches" in m.value for m in at.markdown)
+
+    next(t for t in at.text_input if t.label == "New approach").input("Data-driven")
+    next(t for t in at.text_input if t.label == "Description (optional)").input("Learns from real logs")
+    at.button(key="FormSubmitter:new_approach-Add").click().run()
+    assert not at.exception, at.exception
+    approaches = json.loads((tmp_path / "data" / "approaches.json").read_text(encoding="utf-8"))["approaches"]
+    assert approaches == [{"number": 1, "name": "Data-driven", "description": "Learns from real logs"}]
+
+    at.segmented_control(key="coding_kind").set_value("Tags").run()
+    at.selectbox(key="ov_rename_old").set_value("petrinet")
+    at.text_input(key="ov_rename_new").input("petri net").run()
+    at.button(key="ov_rename_go").click().run()
+    assert not at.exception, at.exception
+    (ann,) = _annotations(tmp_path)
+    assert ann["tags"] == ["Petri net"]  # merged into the existing spelling, no duplicate

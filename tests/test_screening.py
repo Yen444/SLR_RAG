@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from slr_rag import screening, store
+from slr_rag import coding, screening, store
 from slr_rag.catalog import scan_papers
 
 from .conftest import make_pdf
@@ -88,17 +88,23 @@ def test_export_keeps_original_columns_and_links_across_databases(screened, sett
     _, records, sc = screened
     one, scholar = _by_title(sc, "Real Title One"), _by_title(sc, "Scholar One")
     ann = store.get(one, settings, review)
-    ann["decision"], ann["exclusion_reason"], ann["fields"] = "exclude", "off topic", {"design": "RCT",
+    ann["decision"], ann["decision_reasons"], ann["fields"] = "exclude", ["off topic", "other"], {"design": "RCT",
                                                                                        "methods": ["survey"]}
     store.save(ann, settings)
     store.link(store.get(one, settings, review), store.get(scholar, settings, review), settings)
+    ann = store.get(one, settings, review)
+    ann["tags"], ann["approaches"] = ["simulation", "Petri net"], [coding.add_approach(settings, "Model-based")]
+    ann["pending"], ann["pending_note"] = True, "check table 2"
+    store.save(ann, settings)
 
     df = screening.export(records, sc, sc.papers, settings, review)
     assert list(df.columns[: len(COLUMNS)]) == COLUMNS and len(df) == 4
     row = df[df["title"] == "Real Title One"].iloc[0]
     assert row["final_decision"] == "included" and row["final_decision_updated"] == "excluded"
-    assert row["review_exclusion_reason"] == "off topic"
+    assert row["review_decision_reasons"] == "off topic;other"
     assert row["design"] == "RCT" and row["methods"] == "survey"
+    assert row["review_tags"] == "simulation;Petri net" and row["review_approaches"] == "1. Model-based"
+    assert row["review_pending"] is True and row["review_pending_note"] == "check table 2"
     assert row["linked_papers"] == "paper_1"  # gs/paper_1.pdf: linked across databases, by file name
     assert df[df["title"] == "Scholar One"].iloc[0]["linked_papers"] == "sd_1_included"
     saved = store.get(one, settings, review)
@@ -146,7 +152,7 @@ def test_write_reviewed_keeps_an_updated_copy_per_database(screened, settings, r
     _, records, sc = screened
     one = _by_title(sc, "Real Title One")
     ann = store.get(one, settings, review)
-    ann["decision"], ann["exclusion_reason"] = "exclude", "off topic"
+    ann["decision"], ann["decision_reasons"] = "exclude", ["off topic"]
     store.save(ann, settings)
 
     assert screening.write_reviewed(records, sc, sc.papers, settings, review) == []
@@ -156,7 +162,7 @@ def test_write_reviewed_keeps_an_updated_copy_per_database(screened, settings, r
     assert "source_csv" not in sd.columns and not [c for c in sd.columns if c.startswith("_")]
     row = sd[sd["item_id"] == "sd_1"].iloc[0]
     assert row["final_decision"] == "excluded" and row["screening_final_decision"] == "included"
-    assert row["review_exclusion_reason"] == "off topic"
+    assert row["review_decision_reasons"] == "off topic"
     assert sd[sd["item_id"] == "sd_2"].iloc[0]["final_decision"] == "included"
     assert list(gs["item_id"]) == ["gs_1"]
     # the original CSV is untouched
