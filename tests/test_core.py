@@ -106,6 +106,7 @@ def test_annotation_round_trip_and_links(settings, review):
 
     df = store.export_table([a, b], settings, review)
     assert df["design"][0] == "RCT" and df["design"].isna()[1]
+    assert not df["pending"].any() and list(df["pending_note"]) == ["", ""]
 
 
 def test_fields_removed_from_config_are_kept(settings, review):
@@ -141,12 +142,15 @@ def test_extraction_prompt_and_option_normalizing(review):
     assert _normalize(next(f for f in review.fields if f.name == "design"), "rct") == "RCT"
 
 
-def test_old_reason_note_is_read_as_exclusion_note(settings, review):
+def test_old_reason_and_note_keys_are_renamed(settings, review):
     make_pdf(settings.papers_dir / "a.pdf", ["x"])
     (paper,) = scan_papers(settings)
     settings.annotations_dir.mkdir(parents=True)
     (settings.annotations_dir / f"{paper.paper_id}.json").write_text(
-        json.dumps({"paper_id": paper.paper_id, "reason_note": "old note", "reason_text": "old"}), encoding="utf-8")
+        json.dumps({"paper_id": paper.paper_id, "reason_note": "old note", "exclusion_reason": "off topic"}),
+        encoding="utf-8")
     ann = store.get(paper, settings, review)
-    assert ann["exclusion_note"] == "old note" and "reason_note" not in ann
-    assert store.export_table([paper], settings, review)["exclusion_note"][0] == "old note"
+    assert ann["decision_note"] == "old note" and ann["decision_reasons"] == ["off topic"]
+    assert "reason_note" not in ann and "exclusion_reason" not in ann
+    row = store.export_table([paper], settings, review).iloc[0]
+    assert row["decision_note"] == "old note" and row["decision_reasons"] == "off topic"

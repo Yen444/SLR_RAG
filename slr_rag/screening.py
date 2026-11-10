@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 
 import pandas as pd
 
-from . import store
+from . import coding, store
 from .catalog import Paper
 from .config import ReviewConfig, Settings
 
@@ -178,6 +178,7 @@ def export(records: pd.DataFrame, sc: Scope, papers: list[Paper], settings: Sett
     by_id = {p.paper_id: p for p in papers}
     pid_of = {i: pid for pid, i in sc.rows.items()}
     filename_of = {p.paper_id: p.filename for p in papers}
+    approaches = coding.load_approaches(settings)
     rows = []
     for i in records.index:
         pid = pid_of.get(i)
@@ -189,14 +190,17 @@ def export(records: pd.DataFrame, sc: Scope, papers: list[Paper], settings: Sett
         rows.append({
             "final_decision_updated": "excluded" if ann["decision"] == review.exclude_decision else original,
             "review_status": ann["status"],
+            "review_pending": ann.get("pending", False),
+            "review_pending_note": ann.get("pending_note", ""),
             "review_decision": ann["decision"],
-            "review_exclusion_reason": ann.get("exclusion_reason"),
-            "review_exclusion_note": ann.get("exclusion_note") or ann.get("reason_note", ""),
+            "review_decision_reasons": ";".join(ann.get("decision_reasons", [])),
+            "review_decision_note": ann.get("decision_note", ""),
             "linked_papers": store.linked_names(ann, filename_of),
             "review_relation_note": ann.get("relation_note", ""),
-        } | store.field_columns(ann["fields"], review))
-    columns = ["final_decision_updated", "review_status", "review_decision", "review_exclusion_reason",
-               "review_exclusion_note", "linked_papers", "review_relation_note",
+        } | {f"review_{k}": v for k, v in coding.export_columns(ann, approaches).items()}
+          | store.field_columns(ann["fields"], review))
+    columns = ["final_decision_updated", "review_status", "review_pending", "review_pending_note", "review_decision", "review_decision_reasons",
+               "review_decision_note", "linked_papers", "review_relation_note", "review_tags", "review_approaches",
                *store.field_columns({}, review)]
     added = pd.DataFrame(rows, index=records.index, columns=columns).astype(object).fillna("")
     out = records.drop(columns=internal_columns(settings), errors="ignore")

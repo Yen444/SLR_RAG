@@ -48,6 +48,7 @@ class ReviewConfig(BaseModel):
     done_status: str = ""
     decisions: list[str] = Field(min_length=1)
     exclude_decision: str = "exclude"
+    unsure_decision: str = ""  # e.g. "maybe": also asks for a reason (from the same list)
     exclusion_reasons: list[str] = []
     ai_instructions: str = ""  # context for "Fill with AI", e.g. what the review is about
     sections: list[Section] = []  # fields grouped under a heading; added to `fields` in order
@@ -66,6 +67,11 @@ class ReviewConfig(BaseModel):
         if duplicates:
             raise ValueError(f"duplicate field names: {sorted(duplicates)}")
         return self
+
+    @property
+    def reason_decisions(self) -> list[str]:
+        """Decisions that ask for a reason from exclusion_reasons."""
+        return [d for d in (self.exclude_decision, self.unsure_decision) if d]
 
 
 class ModelSpec(BaseModel):

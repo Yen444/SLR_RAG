@@ -7,12 +7,15 @@ done_status: done             # counted in the progress bar
 # Include/exclude decision. The first one is the default (papers from the screening CSVs are already included).
 decisions: [include, exclude, maybe]
 exclude_decision: exclude     # choosing this asks for an exclusion reason
-exclusion_reasons:
-  - not about synthetic event log generation / simulation / augmentation
-  - no new method (only applies an existing tool)
-  - not enough methodological detail
-  - duplicate / extended version of another included paper
-  - other
+unsure_decision: maybe        # choosing this asks for an unsure reason (from the same list)
+exclusion_reasons:            # reasons for exclude and for maybe
+  - No concrete methodological approach
+  - No synthetic event-log generation capability
+  - No complete, observable process-execution event logs
+  - Essential mechanism delegated externally
+  - Generation/simulation/augmentation is only auxiliary
+  - Insufficient methodological details
+  - Process-specific and non-generalizable approach
 
 # Context for "Fill with AI" (added to its instructions).
 ai_instructions: |
